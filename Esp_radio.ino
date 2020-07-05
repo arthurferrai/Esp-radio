@@ -59,22 +59,24 @@
 // Wiring:
 // NodeMCU  GPIO    Pin to program  Wired to LCD        Wired to VS1053      Wired to rest
 // -------  ------  --------------  ---------------     -------------------  ---------------------
-// D0       GPIO16  16              -                   pin 1 DCS            -
-// D1       GPIO5    5              -                   pin 2 CS             LED on nodeMCU
-// D2       GPIO4    4              -                   pin 4 DREQ           -
-// D3       GPIO0    0 FLASH        -                   -                    Control button "Next station"
-// D4       GPIO2    2              pin 3 (D/C)         -                    (OR)Control button "Station 1"
-// D5       GPIO14  14 SCLK         pin 5 (CLK)         pin 5 SCK            -
-// D6       GPIO12  12 MISO         -                   pin 7 MISO           -
-// D7       GPIO13  13 MOSI         pin 4 (DIN)         pin 6 MOSI           -
-// D8       GPIO15  15              pin 2 (CS)          -                    (OR)Control button "Previous station"
-// D9       GPI03    3 RXD0         -                   -                    Reserved serial input
-// D10      GPIO1    1 TXD0         -                   -                    Reserved serial output
+// D0       GPIO16  16              -                   (10) XDCS            LED on nodeMCU
+// D1       -       -               SCL                 -                    -
+// D2       -       -               SDA                 -                    -
+// D3       GPIO0   0 FLASH         -                   (7) DREQ             -
+// D4       GPIO2   2               -                   -                    -
+// D5       GPIO14  14 SCLK         -                   (6) SCK              -
+// D6       GPIO12  12 MISO         -                   (4) MISO             -
+// D7       GPIO13  13 MOSI         -                   (5) MOSI             -
+// D8       GPIO15  15              -                   -                    -
+// D9       GPIO3   3 RXD0          -                   -                    Reserved serial input
+// D10      GPIO1   1 TXD0          -                   -                    Reserved serial output
+// CLK      GPIO9   9               -                   (9) X S              -
+// SD3      GPIO10  10 INPUT        -                   -                    -
 // -------  ------  --------------  ---------------     -------------------  ---------------------
-// GND      -        -              pin 8 (GND)         pin 8 GND            Power supply
-// VCC 3.3  -        -              pin 6 (VCC)         -                    LDO 3.3 Volt
-// VCC 5 V  -        -              pin 7 (BL)          pin 9 5V             Power supply
-// RST      -        -              pin 1 (RST)         pin 3 RESET          Reset circuit
+// GND      -       -               GND                 (3) DGND             Power supply
+// VCC 3.3  -       -               -                   -                    LDO 3.3 Volt
+// VCC 5 V  -       -               VCC                 (1,2) 5V             Power supply
+// RST      -       -               -                   (8) XRST             Reset circuit
 //
 // The reset circuit is a circuit with 2 diodes to GPIO5 and GPIO16 and a resistor to ground
 // (wired OR gate) because there was not a free GPIO output available for this function.
@@ -135,23 +137,23 @@
 //
 // Define the version number, also used for webserver as Last-Modified header:
 #define VERSION "Tue, 23 Apr 2019 09:10:00 GMT"
+#define DEBUG
 // TFT.  Define USETFT if required.
-#define USETFT
+//#define USETFT
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <AsyncMqttClient.h>
 #include <SPI.h>
-#if defined ( USETFT )
-#include <Adafruit_GFX.h>
-#include <TFT_ILI9163C.h>
-#endif
 #include <Ticker.h>
 #include <stdio.h>
 #include <string.h>
 #include <FS.h>
 #include <ArduinoOTA.h>
 #include <TinyXML.h>
+#include "VS1053.h"
+#include "debug.h"
+#include "display.h"
+#include "asciitools.h"
 
 extern "C"
 {
@@ -171,43 +173,23 @@ extern "C"
 #define asw2    2000
 #define asw3    2000
 //
-// Color definitions for the TFT screen (if used)
-#define BLACK   0x0000
-#define BLUE    0xF800
-#define RED     0x001F
-#define GREEN   0x07E0
-#define CYAN    GREEN | BLUE
-#define MAGENTA RED | BLUE
-#define YELLOW  RED | GREEN
 // Digital I/O used
 // Pins for VS1053 module
-#define VS1053_CS     5
-#define VS1053_DCS    16
-#define VS1053_DREQ   4
-// Pins CS and DC for TFT module (if used, see definition of "USETFT")
-#define TFT_CS 15
-#define TFT_DC 2
-// Control button (GPIO) for controlling station
-#define BUTTON1 2
-#define BUTTON2 0
-#define BUTTON3 15
+const uint8_t VS1053_CS = 9;
+const uint8_t VS1053_DCS = D0;
+const uint8_t VS1053_DREQ = D3;
 // Ringbuffer for smooth playing. 20000 bytes is 160 Kbits, about 1.5 seconds at 128kb bitrate.
 #define RINGBFSIZ 20000
-// Debug buffer size
-#define DEBUG_BUFFER_SIZE 100
 // Name of the ini file
 #define INIFILENAME "/radio.ini"
 // Access point name if connection to WiFi network fails.  Also the hostname for WiFi and OTA.
 // Not that the password of an AP must be at least as long as 8 characters.
 // Also used for other naming.
 #define NAME "Esp-radio"
-// Maximum number of MQTT reconnects before give-up
-#define MAXMQTTCONNECTS 20
 //
 //******************************************************************************************
 // Forward declaration of various functions                                                *
 //******************************************************************************************
-//void   displayinfo ( const char* str, uint16_t pos, uint16_t height, uint16_t color ) ;
 void   showstreamtitle ( const char* ml, bool full = false ) ;
 void   handlebyte ( uint8_t b, bool force = false ) ;
 void   handlebyte_ch ( uint8_t b, bool force = false ) ;
@@ -216,12 +198,10 @@ void   handleFSf ( AsyncWebServerRequest* request, const String& filename ) ;
 void   handleCmd ( AsyncWebServerRequest* request )  ;
 void   handleFileUpload ( AsyncWebServerRequest* request, String filename,
                           size_t index, uint8_t* data, size_t len, bool final ) ;
-char*  dbgprint( const char* format, ... ) ;
 char*  analyzeCmd ( const char* str ) ;
 char*  analyzeCmd ( const char* par, const char* val ) ;
 String chomp ( String str ) ;
-void   publishIP() ;
-String xmlparse ( String mount ) ;
+// String xmlparse ( String mount ) ;
 bool   connecttohost() ;
 
 
@@ -236,12 +216,6 @@ bool   connecttohost() ;
 //******************************************************************************************
 struct ini_struct
 {
-  String         mqttbroker ;                              // The name of the MQTT broker server
-  uint16_t       mqttport ;                                // Port, default 1883
-  String         mqttuser ;                                // User for MQTT authentication
-  String         mqttpasswd ;                              // Password for MQTT authentication
-  String         mqtttopic ;                               // Topic to suscribe to
-  String         mqttpubtopic ;                            // Topic to pubtop (IP will be published)
   uint8_t        reqvol ;                                  // Requested volume
   uint8_t        rtone[4] ;                                // Requested bass/treble settings
   int8_t         newpreset ;                               // Requested preset
@@ -249,25 +223,24 @@ struct ini_struct
   String         passwd ;                                  // Password for WiFi network
 } ;
 
-enum datamode_t { INIT = 1, HEADER = 2, DATA = 4,
-                  METADATA = 8, PLAYLISTINIT = 16,
-                  PLAYLISTHEADER = 32, PLAYLISTDATA = 64,
-                  STOPREQD = 128, STOPPED = 256
+enum datamode_t { INIT = 1,  // Initialize for header receive
+                  HEADER = 2, // read mp3 header
+                  DATA = 4,  // read mp3/ogg data
+                  METADATA = 8,  // read metadata
+                  PLAYLISTINIT = 16,  // Initialize for playlist handling
+                  PLAYLISTHEADER = 32,  // Read playlist header
+                  PLAYLISTDATA = 64,  // Read playlist data
+                  STOPREQD = 128,  // STOP requested
+                  STOPPED = 256  // Stopped
                 } ;        // State for datastream
 
 // Global variables
-int              DEBUG = 1 ;
 ini_struct       ini_block ;                               // Holds configurable data
 WiFiClient       *mp3client = NULL ;                       // An instance of the mp3 client
 AsyncWebServer   cmdserver ( 80 ) ;                        // Instance of embedded webserver on port 80
-AsyncMqttClient  mqttclient ;                              // Client for MQTT subscriber
-IPAddress        mqtt_server_IP ;                          // IP address of MQTT broker
 char             cmd[130] ;                                // Command from MQTT or Serial
-#if defined ( USETFT )
-TFT_ILI9163C     tft = TFT_ILI9163C ( TFT_CS, TFT_DC ) ;
-#endif
 Ticker           tckr ;                                    // For timing 100 msec
-TinyXML          xml;                                      // For XML parser.
+// TinyXML          xml;                                      // For XML parser.
 uint32_t         totalcount = 0 ;                          // Counter mp3 data
 datamode_t       datamode ;                                // State of datastream
 int              metacount ;                               // Number of bytes in metadata
@@ -280,11 +253,11 @@ int              metaint = 0 ;                             // Number of databyte
 int8_t           currentpreset = -1 ;                      // Preset station playing
 String           host ;                                    // The URL to connect to or file to play
 String           playlist ;                                // The URL of the specified playlist
-bool             xmlreq = false ;                          // Request for XML parse.
+// bool             xmlreq = false ;                          // Request for XML parse.
 bool             hostreq = false ;                         // Request for new host
 bool             reqtone = false ;                         // New tone setting requested
 bool             muteflag = false ;                        // Mute output
-uint8_t*         ringbuf ;                                 // Ringbuffer for VS1053
+uint8_t          ringbuf[RINGBFSIZ] ;                                 // Ringbuffer for VS1053
 uint16_t         rbwindex = 0 ;                            // Fill pointer in ringbuffer
 uint16_t         rbrindex = RINGBFSIZ - 1 ;                // Emptypointer in ringbuffer
 uint16_t         rcount = 0 ;                              // Number of bytes in ringbuffer
@@ -297,7 +270,6 @@ String           anetworks ;                               // Aceptable networks
 String           presetlist ;                              // List for webserver
 uint8_t          num_an ;                                  // Number of acceptable networks in .ini file
 String           testfilename = "" ;                       // File to test (SPIFFS speed)
-uint16_t         mqttcount = 0 ;                           // Counter MAXMQTTCONNECTS
 int8_t           playlist_num = 0 ;                        // Nonzero for selection from playlist
 File             mp3file  ;                                // File containing mp3 on SPIFFS
 bool             localfile = false ;                       // Play from local mp3-file or not
@@ -305,16 +277,16 @@ bool             chunked = false ;                         // Station provides c
 int              chunkcount = 0 ;                          // Counter for chunked transfer
 
 // XML parse globals.
-const char* xmlhost = "playerservices.streamtheworld.com" ;// XML data source
-const char* xmlget =  "GET /api/livestream"                // XML get parameters
-                      "?version=1.5"                       // API Version of IHeartRadio
-                      "&mount=%sAAC"                       // MountPoint with Station Callsign
-                      "&lang=en" ;                         // Language
-int         xmlport = 80 ;                                 // XML Port
-uint8_t     xmlbuffer[150] ;                               // For XML decoding
-String      xmlOpen ;                                      // Opening XML tag
-String      xmlTag ;                                       // Current XML tag
-String      xmlData ;                                      // Data inside tag
+// const char* xmlhost = "playerservices.streamtheworld.com" ;// XML data source
+// const char* xmlget =  "GET /api/livestream"                // XML get parameters
+//                       "?version=1.5"                       // API Version of IHeartRadio
+//                       "&mount=%sAAC"                       // MountPoint with Station Callsign
+//                       "&lang=en" ;                         // Language
+// int         xmlport = 80 ;                                 // XML Port
+// uint8_t     xmlbuffer[150] ;                               // For XML decoding
+// String      xmlOpen ;                                      // Opening XML tag
+// String      xmlTag ;                                       // Current XML tag
+// String      xmlData ;                                      // Data inside tag
 String      stationServer( "" ) ;                          // Radio stream server
 String      stationPort( "" ) ;                            // Radio stream port
 String      stationMount( "" ) ;                           // Radio stream Callsign
@@ -332,390 +304,6 @@ String      stationMount( "" ) ;                           // Radio stream Calls
 #include "radio_css.h"
 #include "favicon_ico.h"
 //
-//******************************************************************************************
-// VS1053 stuff.  Based on maniacbug library.                                              *
-//******************************************************************************************
-// VS1053 class definition.                                                                *
-//******************************************************************************************
-class VS1053
-{
-  private:
-    uint8_t       cs_pin ;                        // Pin where CS line is connected
-    uint8_t       dcs_pin ;                       // Pin where DCS line is connected
-    uint8_t       dreq_pin ;                      // Pin where DREQ line is connected
-    uint8_t       curvol ;                        // Current volume setting 0..100%
-    const uint8_t vs1053_chunk_size = 32 ;
-    // SCI Register
-    const uint8_t SCI_MODE          = 0x0 ;
-    const uint8_t SCI_BASS          = 0x2 ;
-    const uint8_t SCI_CLOCKF        = 0x3 ;
-    const uint8_t SCI_AUDATA        = 0x5 ;
-    const uint8_t SCI_WRAM          = 0x6 ;
-    const uint8_t SCI_WRAMADDR      = 0x7 ;
-    const uint8_t SCI_AIADDR        = 0xA ;
-    const uint8_t SCI_VOL           = 0xB ;
-    const uint8_t SCI_AICTRL0       = 0xC ;
-    const uint8_t SCI_AICTRL1       = 0xD ;
-    const uint8_t SCI_num_registers = 0xF ;
-    // SCI_MODE bits
-    const uint8_t SM_SDINEW         = 11 ;        // Bitnumber in SCI_MODE always on
-    const uint8_t SM_RESET          = 2 ;         // Bitnumber in SCI_MODE soft reset
-    const uint8_t SM_CANCEL         = 3 ;         // Bitnumber in SCI_MODE cancel song
-    const uint8_t SM_TESTS          = 5 ;         // Bitnumber in SCI_MODE for tests
-    const uint8_t SM_LINE1          = 14 ;        // Bitnumber in SCI_MODE for Line input
-    SPISettings   VS1053_SPI ;                    // SPI settings for this slave
-    uint8_t       endFillByte ;                   // Byte to send when stopping song
-  protected:
-    inline void await_data_request() const
-    {
-      while ( !digitalRead ( dreq_pin ) )
-      {
-        yield() ;                                 // Very short delay
-      }
-    }
-
-    inline void control_mode_on() const
-    {
-      SPI.beginTransaction ( VS1053_SPI ) ;       // Prevent other SPI users
-      digitalWrite ( dcs_pin, HIGH ) ;            // Bring slave in control mode
-      digitalWrite ( cs_pin, LOW ) ;
-    }
-
-    inline void control_mode_off() const
-    {
-      digitalWrite ( cs_pin, HIGH ) ;             // End control mode
-      SPI.endTransaction() ;                      // Allow other SPI users
-    }
-
-    inline void data_mode_on() const
-    {
-      SPI.beginTransaction ( VS1053_SPI ) ;       // Prevent other SPI users
-      digitalWrite ( cs_pin, HIGH ) ;             // Bring slave in data mode
-      digitalWrite ( dcs_pin, LOW ) ;
-    }
-
-    inline void data_mode_off() const
-    {
-      digitalWrite ( dcs_pin, HIGH ) ;            // End data mode
-      SPI.endTransaction() ;                      // Allow other SPI users
-    }
-
-    uint16_t read_register ( uint8_t _reg ) const ;
-    void     write_register ( uint8_t _reg, uint16_t _value ) const ;
-    void     sdi_send_buffer ( uint8_t* data, size_t len ) ;
-    void     sdi_send_fillers ( size_t length ) ;
-    void     wram_write ( uint16_t address, uint16_t data ) ;
-    uint16_t wram_read ( uint16_t address ) ;
-
-  public:
-    // Constructor.  Only sets pin values.  Doesn't touch the chip.  Be sure to call begin()!
-    VS1053 ( uint8_t _cs_pin, uint8_t _dcs_pin, uint8_t _dreq_pin ) ;
-    void     begin() ;                                   // Begin operation.  Sets pins correctly,
-    // and prepares SPI bus.
-    void     startSong() ;                               // Prepare to start playing. Call this each
-    // time a new song starts.
-    void     playChunk ( uint8_t* data, size_t len ) ;   // Play a chunk of data.  Copies the data to
-    // the chip.  Blocks until complete.
-    void     stopSong() ;                                // Finish playing a song. Call this after
-    // the last playChunk call.
-    void     setVolume ( uint8_t vol ) ;                 // Set the player volume.Level from 0-100,
-    // higher is louder.
-    void     setTone ( uint8_t* rtone ) ;                // Set the player baas/treble, 4 nibbles for
-    // treble gain/freq and bass gain/freq
-    uint8_t  getVolume() ;                               // Get the currenet volume setting.
-    // higher is louder.
-    void     printDetails ( const char *header ) ;       // Print configuration details to serial output.
-    void     softReset() ;                               // Do a soft reset
-    bool     testComm ( const char *header ) ;           // Test communication with module
-    inline bool data_request() const
-    {
-      return ( digitalRead ( dreq_pin ) == HIGH ) ;
-    }
-    void     AdjustRate ( long ppm2 ) ;                  // Fine tune the datarate
-} ;
-
-//******************************************************************************************
-// VS1053 class implementation.                                                            *
-//******************************************************************************************
-
-VS1053::VS1053 ( uint8_t _cs_pin, uint8_t _dcs_pin, uint8_t _dreq_pin ) :
-  cs_pin(_cs_pin), dcs_pin(_dcs_pin), dreq_pin(_dreq_pin)
-{
-}
-
-uint16_t VS1053::read_register ( uint8_t _reg ) const
-{
-  uint16_t result ;
-
-  control_mode_on() ;
-  SPI.write ( 3 ) ;                                // Read operation
-  SPI.write ( _reg ) ;                             // Register to write (0..0xF)
-  // Note: transfer16 does not seem to work
-  result = ( SPI.transfer ( 0xFF ) << 8 ) |        // Read 16 bits data
-           ( SPI.transfer ( 0xFF ) ) ;
-  await_data_request() ;                           // Wait for DREQ to be HIGH again
-  control_mode_off() ;
-  return result ;
-}
-
-void VS1053::write_register ( uint8_t _reg, uint16_t _value ) const
-{
-  control_mode_on( );
-  SPI.write ( 2 ) ;                                // Write operation
-  SPI.write ( _reg ) ;                             // Register to write (0..0xF)
-  SPI.write16 ( _value ) ;                         // Send 16 bits data
-  await_data_request() ;
-  control_mode_off() ;
-}
-
-void VS1053::sdi_send_buffer ( uint8_t* data, size_t len )
-{
-  size_t chunk_length ;                            // Length of chunk 32 byte or shorter
-
-  data_mode_on() ;
-  while ( len )                                    // More to do?
-  {
-    await_data_request() ;                         // Wait for space available
-    chunk_length = len ;
-    if ( len > vs1053_chunk_size )
-    {
-      chunk_length = vs1053_chunk_size ;
-    }
-    len -= chunk_length ;
-    SPI.writeBytes ( data, chunk_length ) ;
-    data += chunk_length ;
-  }
-  data_mode_off() ;
-}
-
-void VS1053::sdi_send_fillers ( size_t len )
-{
-  size_t chunk_length ;                            // Length of chunk 32 byte or shorter
-
-  data_mode_on() ;
-  while ( len )                                    // More to do?
-  {
-    await_data_request() ;                         // Wait for space available
-    chunk_length = len ;
-    if ( len > vs1053_chunk_size )
-    {
-      chunk_length = vs1053_chunk_size ;
-    }
-    len -= chunk_length ;
-    while ( chunk_length-- )
-    {
-      SPI.write ( endFillByte ) ;
-    }
-  }
-  data_mode_off();
-}
-
-void VS1053::wram_write ( uint16_t address, uint16_t data )
-{
-  write_register ( SCI_WRAMADDR, address ) ;
-  write_register ( SCI_WRAM, data ) ;
-}
-
-uint16_t VS1053::wram_read ( uint16_t address )
-{
-  write_register ( SCI_WRAMADDR, address ) ;            // Start reading from WRAM
-  return read_register ( SCI_WRAM ) ;                   // Read back result
-}
-
-bool VS1053::testComm ( const char *header )
-{
-  // Test the communication with the VS1053 module.  The result wille be returned.
-  // If DREQ is low, there is problably no VS1053 connected.  Pull the line HIGH
-  // in order to prevent an endless loop waiting for this signal.  The rest of the
-  // software will still work, but readbacks from VS1053 will fail.
-  int       i ;                                         // Loop control
-  uint16_t  r1, r2, cnt = 0 ;
-  uint16_t  delta = 300 ;                               // 3 for fast SPI
-
-  if ( !digitalRead ( dreq_pin ) )
-  {
-    dbgprint ( "VS1053 not properly installed!" ) ;
-    // Allow testing without the VS1053 module
-    pinMode ( dreq_pin,  INPUT_PULLUP ) ;               // DREQ is now input with pull-up
-    return false ;                                      // Return bad result
-  }
-  // Further TESTING.  Check if SCI bus can write and read without errors.
-  // We will use the volume setting for this.
-  // Will give warnings on serial output if DEBUG is active.
-  // A maximum of 20 errors will be reported.
-  if ( strstr ( header, "Fast" ) )
-  {
-    delta = 3 ;                                         // Fast SPI, more loops
-  }
-  dbgprint ( header ) ;                                 // Show a header
-  for ( i = 0 ; ( i < 0xFFFF ) && ( cnt < 20 ) ; i += delta )
-  {
-    write_register ( SCI_VOL, i ) ;                     // Write data to SCI_VOL
-    r1 = read_register ( SCI_VOL ) ;                    // Read back for the first time
-    r2 = read_register ( SCI_VOL ) ;                    // Read back a second time
-    if  ( r1 != r2 || i != r1 || i != r2 )              // Check for 2 equal reads
-    {
-      dbgprint ( "VS1053 error retry SB:%04X R1:%04X R2:%04X", i, r1, r2 ) ;
-      cnt++ ;
-      delay ( 10 ) ;
-    }
-    yield() ;                                           // Allow ESP firmware to do some bookkeeping
-  }
-  return ( cnt == 0 ) ;                                 // Return the result
-}
-
-void VS1053::begin()
-{
-  pinMode      ( dreq_pin,  INPUT ) ;                   // DREQ is an input
-  pinMode      ( cs_pin,    OUTPUT ) ;                  // The SCI and SDI signals
-  pinMode      ( dcs_pin,   OUTPUT ) ;
-  digitalWrite ( dcs_pin,   HIGH ) ;                    // Start HIGH for SCI en SDI
-  digitalWrite ( cs_pin,    HIGH ) ;
-  delay ( 100 ) ;
-  dbgprint ( "Reset VS1053..." ) ;
-  digitalWrite ( dcs_pin,   LOW ) ;                     // Low & Low will bring reset pin low
-  digitalWrite ( cs_pin,    LOW ) ;
-  delay ( 2000 ) ;
-  dbgprint ( "End reset VS1053..." ) ;
-  digitalWrite ( dcs_pin,   HIGH ) ;                    // Back to normal again
-  digitalWrite ( cs_pin,    HIGH ) ;
-  delay ( 500 ) ;
-  // Init SPI in slow mode ( 0.2 MHz )
-  VS1053_SPI = SPISettings ( 200000, MSBFIRST, SPI_MODE0 ) ;
-  //printDetails ( "Right after reset/startup" ) ;
-  delay ( 20 ) ;
-  //printDetails ( "20 msec after reset" ) ;
-  testComm ( "Slow SPI,Testing VS1053 read/write registers..." ) ;
-  // Most VS1053 modules will start up in midi mode.  The result is that there is no audio
-  // when playing MP3.  You can modify the board, but there is a more elegant way:
-  wram_write ( 0xC017, 3 ) ;                            // GPIO DDR = 3
-  wram_write ( 0xC019, 0 ) ;                            // GPIO ODATA = 0
-  delay ( 100 ) ;
-  //printDetails ( "After test loop" ) ;
-  softReset() ;                                         // Do a soft reset
-  // Switch on the analog parts
-  write_register ( SCI_AUDATA, 44100 + 1 ) ;            // 44.1kHz + stereo
-  // The next clocksetting allows SPI clocking at 5 MHz, 4 MHz is safe then.
-  write_register ( SCI_CLOCKF, 6 << 12 ) ;              // Normal clock settings multiplyer 3.0 = 12.2 MHz
-  //SPI Clock to 4 MHz. Now you can set high speed SPI clock.
-  VS1053_SPI = SPISettings ( 4000000, MSBFIRST, SPI_MODE0 ) ;
-  write_register ( SCI_MODE, _BV ( SM_SDINEW ) | _BV ( SM_LINE1 ) ) ;
-  testComm ( "Fast SPI, Testing VS1053 read/write registers again..." ) ;
-  delay ( 10 ) ;
-  await_data_request() ;
-  endFillByte = wram_read ( 0x1E06 ) & 0xFF ;
-  dbgprint ( "endFillByte is %X", endFillByte ) ;
-  //printDetails ( "After last clocksetting" ) ;
-  delay ( 100 ) ;
-}
-
-void VS1053::setVolume ( uint8_t vol )
-{
-  // Set volume.  Both left and right.
-  // Input value is 0..100.  100 is the loudest.
-  // Clicking reduced by using 0xf8 to 0x00 as limits.
-  uint16_t value ;                                      // Value to send to SCI_VOL
-
-  if ( vol != curvol )
-  {
-    curvol = vol ;                                      // Save for later use
-    value = map ( vol, 0, 100, 0xF8, 0x00 ) ;           // 0..100% to one channel
-    value = ( value << 8 ) | value ;
-    write_register ( SCI_VOL, value ) ;                 // Volume left and right
-  }
-}
-
-void VS1053::setTone ( uint8_t *rtone )                 // Set bass/treble (4 nibbles)
-{
-  // Set tone characteristics.  See documentation for the 4 nibbles.
-  uint16_t value = 0 ;                                  // Value to send to SCI_BASS
-  int      i ;                                          // Loop control
-
-  for ( i = 0 ; i < 4 ; i++ )
-  {
-    value = ( value << 4 ) | rtone[i] ;                 // Shift next nibble in
-  }
-  write_register ( SCI_BASS, value ) ;                  // Tone settings
-  value = read_register ( SCI_BASS ) ;                  // Read back
-  dbgprint ( "BASS settings is %04X", value ) ;         // Print for TEST
-}
-
-uint8_t VS1053::getVolume()                             // Get the currenet volume setting.
-{
-  return curvol ;
-}
-
-void VS1053::startSong()
-{
-  sdi_send_fillers ( 10 ) ;
-}
-
-void VS1053::playChunk ( uint8_t* data, size_t len )
-{
-  sdi_send_buffer ( data, len ) ;
-}
-
-void VS1053::stopSong()
-{
-  uint16_t modereg ;                     // Read from mode register
-  int      i ;                           // Loop control
-
-  sdi_send_fillers ( 2052 ) ;
-  delay ( 10 ) ;
-  write_register ( SCI_MODE, _BV ( SM_SDINEW ) | _BV ( SM_CANCEL ) ) ;
-  for ( i = 0 ; i < 200 ; i++ )
-  {
-    sdi_send_fillers ( 32 ) ;
-    modereg = read_register ( SCI_MODE ) ;  // Read status
-    if ( ( modereg & _BV ( SM_CANCEL ) ) == 0 )
-    {
-      sdi_send_fillers ( 2052 ) ;
-      dbgprint ( "Song stopped correctly after %d msec", i * 10 ) ;
-      return ;
-    }
-    delay ( 10 ) ;
-  }
-  printDetails ( "Song stopped incorrectly!" ) ;
-}
-
-void VS1053::softReset()
-{
-  write_register ( SCI_MODE, _BV ( SM_SDINEW ) | _BV ( SM_RESET ) ) ;
-  delay ( 10 ) ;
-  await_data_request() ;
-}
-
-void VS1053::printDetails ( const char *header )
-{
-  uint16_t     regbuf[16] ;
-  uint8_t      i ;
-
-  dbgprint ( header ) ;
-  dbgprint ( "REG   Contents" ) ;
-  dbgprint ( "---   -----" ) ;
-  for ( i = 0 ; i <= SCI_num_registers ; i++ )
-  {
-    regbuf[i] = read_register ( i ) ;
-  }
-  for ( i = 0 ; i <= SCI_num_registers ; i++ )
-  {
-    delay ( 5 ) ;
-    dbgprint ( "%3X - %5X", i, regbuf[i] ) ;
-  }
-}
-
-void VS1053::AdjustRate ( long ppm2 )
-{
-  write_register ( SCI_WRAMADDR, 0x1e07 ) ;
-  write_register ( SCI_WRAM,     ppm2 ) ;
-  write_register ( SCI_WRAM,     ppm2 >> 16 ) ;
-  // oldClock4KHz = 0 forces  adjustment calculation when rate checked.
-  write_register ( SCI_WRAMADDR, 0x5b1c ) ;
-  write_register ( SCI_WRAM,     0 ) ;
-  // Write to AUDATA or CLOCKF checks rate and recalculates adjustment.
-  write_register ( SCI_AUDATA,   read_register ( SCI_AUDATA ) ) ;
-}
-
 
 // The object for the MP3 player
 VS1053 vs1053player (  VS1053_CS, VS1053_DCS, VS1053_DREQ ) ;
@@ -723,7 +311,6 @@ VS1053 vs1053player (  VS1053_CS, VS1053_DCS, VS1053_DREQ ) ;
 //******************************************************************************************
 // End VS1053 stuff.                                                                       *
 //******************************************************************************************
-
 
 
 //******************************************************************************************
@@ -734,7 +321,7 @@ VS1053 vs1053player (  VS1053_CS, VS1053_DCS, VS1053_DREQ ) ;
 //******************************************************************************************
 inline bool ringspace()
 {
-  return ( rcount < RINGBFSIZ ) ;     // True is at least one byte of free space is available
+  return ( rcount < RINGBFSIZ ) ;     // True if at least one byte of free space is available
 }
 
 
@@ -784,89 +371,6 @@ void emptyring()
   rbwindex = 0 ;                      // Reset ringbuffer administration
   rbrindex = RINGBFSIZ - 1 ;
   rcount = 0 ;
-}
-
-
-//******************************************************************************************
-//                              U T F 8 A S C I I                                          *
-//******************************************************************************************
-// UTF8-Decoder: convert UTF8-string to extended ASCII.                                    *
-// Convert a single Character from UTF8 to Extended ASCII.                                 *
-// Return "0" if a byte has to be ignored.                                                 *
-//******************************************************************************************
-byte utf8ascii ( byte ascii )
-{
-  static const byte lut_C3[] = 
-         { "AAAAAAACEEEEIIIIDNOOOOO#0UUUU###aaaaaaaceeeeiiiidnooooo##uuuuyyy" } ;
-  static byte       c1 ;              // Last character buffer
-  byte              res = 0 ;         // Result, default 0
-
-  if ( ascii <= 0x7F )                // Standard ASCII-set 0..0x7F handling
-  {
-    c1 = 0 ;
-    res = ascii ;                     // Return unmodified
-  }
-  else
-  {
-    switch ( c1 )                     // Conversion depending on first UTF8-character
-    {   
-      case 0xC2: res = '~' ;
-                 break ;
-      case 0xC3: res = lut_C3[ascii-128] ;
-                 break ;
-      case 0x82: if ( ascii == 0xAC )
-                 {
-                    res = 'E' ;       // Special case Euro-symbol
-                 }
-    }
-    c1 = ascii ;                      // Remember actual character
-  }
-  return res ;                        // Otherwise: return zero, if character has to be ignored
-}
-
-
-//******************************************************************************************
-//                              U T F 8 A S C I I                                          *
-//******************************************************************************************
-// In Place conversion UTF8-string to Extended ASCII (ASCII is shorter!).                  *
-//******************************************************************************************
-void utf8ascii ( char* s )
-{
-  int  i, k = 0 ;                     // Indexes for in en out string
-  char c ;
-
-  for ( i = 0 ; s[i] ; i++ )          // For every input character
-  {
-    c = utf8ascii ( s[i] ) ;          // Translate if necessary
-    if ( c )                          // Good translation?
-    {
-      s[k++] = c ;                    // Yes, put in output string
-    }
-  }
-  s[k] = 0 ;                          // Take care of delimeter
-}
-
-
-//******************************************************************************************
-//                                  D B G P R I N T                                        *
-//******************************************************************************************
-// Send a line of info to serial output.  Works like vsprintf(), but checks the BEDUg flag.*
-// Print only if DEBUG flag is true.  Always returns the the formatted string.             *
-//******************************************************************************************
-char* dbgprint ( const char* format, ... )
-{
-  static char sbuf[DEBUG_BUFFER_SIZE] ;                // For debug lines
-  va_list varArgs ;                                    // For variable number of params
-
-  va_start ( varArgs, format ) ;                       // Prepare parameters
-  vsnprintf ( sbuf, sizeof(sbuf), format, varArgs ) ;  // Format the message
-  va_end ( varArgs ) ;                                 // End of using parameters
-  if ( DEBUG )                                         // DEBUG on?
-  {
-    Serial.print ( "D: " ) ;                           // Yes, print prefix
-    Serial.println ( sbuf ) ;                          // and the info
-  }
-  return sbuf ;                                        // Return stored string
 }
 
 
@@ -949,7 +453,9 @@ void listNetworks()
   dbgprint ( "--------------------------------------" ) ;
 }
 
-
+bool in_playlist_mode() {
+  return datamode & (PLAYLISTDATA|PLAYLISTINIT|PLAYLISTHEADER);
+}
 //******************************************************************************************
 //                                  T I M E R 1 0 S E C                                    *
 //******************************************************************************************
@@ -961,12 +467,8 @@ void timer10sec()
 {
   static uint32_t oldtotalcount = 7321 ;          // Needed foor change detection
   static uint8_t  morethanonce = 0 ;              // Counter for succesive fails
-  static uint8_t  t600 = 0 ;                      // Counter for 10 minutes
 
-  if ( datamode & ( INIT | HEADER | DATA |        // Test op playing
-                    METADATA | PLAYLISTINIT |
-                    PLAYLISTHEADER |
-                    PLAYLISTDATA ) )
+  if (is_playing())
   {
     if ( totalcount == oldtotalcount )            // Still playing?
     {
@@ -976,9 +478,7 @@ void timer10sec()
         dbgprint ( "Going to restart..." ) ;
         ESP.restart() ;                           // Reset the CPU, probably no return
       }
-      if ( datamode & ( PLAYLISTDATA |            // In playlist mode?
-                        PLAYLISTINIT |
-                        PLAYLISTHEADER ) )
+      if (in_playlist_mode())
       {
         playlist_num = 0 ;                        // Yes, end of playlist
       }
@@ -999,12 +499,6 @@ void timer10sec()
         morethanonce = 0 ;                        // Data see, reset failcounter
       }
       oldtotalcount = totalcount ;                // Save for comparison in next cycle
-    }
-    if ( t600++ == 60 )                           // 10 minutes over?
-    {
-      t600 = 0 ;                                  // Yes, reset counter
-      dbgprint ( "10 minutes over" ) ;
-      publishIP() ;                               // Re-publish IP
     }
   }
 }
@@ -1119,43 +613,6 @@ void timer100()
   }
   else
   {
-    newval = digitalRead ( BUTTON2 ) ;            // Test if below certain level
-    if ( newval != oldval2 )                      // Change?
-    {
-      oldval2 = newval ;                          // Yes, remember value
-      if ( newval == LOW )                        // Button pushed?
-      {
-        ini_block.newpreset = currentpreset + 1 ; // Yes, goto next preset station
-        //dbgprint ( "Digital button 2 pushed" ) ;
-      }
-      return ;
-    }
-#if ( not ( defined ( USETFT ) ) )
-    newval = digitalRead ( BUTTON1 ) ;            // Test if below certain level
-    if ( newval != oldval1 )                      // Change?
-    {
-      oldval1 = newval ;                          // Yes, remember value
-      if ( newval == LOW )                        // Button pushed?
-      {
-        ini_block.newpreset = 0 ;                 // Yes, goto first preset station
-        //dbgprint ( "Digital button 1 pushed" ) ;
-      }
-      return ;
-    }
-    // Note that BUTTON3 has inverted input
-    newval = digitalRead ( BUTTON3 ) ;            // Test if below certain level
-    newval = HIGH + LOW - newval ;                // Reverse polarity
-    if ( newval != oldval3 )                      // Change?
-    {
-      oldval3 = newval ;                          // Yes, remember value
-      if ( newval == LOW )                        // Button pushed?
-      {
-        ini_block.newpreset = currentpreset - 1 ; // Yes, goto previous preset station
-        //dbgprint ( "Digital button 3 pushed" ) ;
-      }
-      return ;
-    }
-#endif
     v = analogRead ( A0 ) ;                       // Read analog value
     anewval = anagetsw ( v ) ;                    // Check analog value for program switches
     if ( anewval != aoldval )                     // Change?
@@ -1204,28 +661,6 @@ void displayvolume()
 
 
 //******************************************************************************************
-//                              D I S P L A Y I N F O                                      *
-//******************************************************************************************
-// Show a string on the LCD at a specified y-position in a specified color                 *
-//******************************************************************************************
-#if defined ( USETFT )
-void displayinfo ( const char* str, uint16_t pos, uint16_t height, uint16_t color )
-{
-  char buf [ strlen ( str ) + 1 ] ;             // Need some buffer space
-  
-  strcpy ( buf, str ) ;                         // Make a local copy of the string
-  utf8ascii ( buf ) ;                           // Convert possible UTF8
-  tft.fillRect ( 0, pos, 160, height, BLACK ) ; // Clear the space for new info
-  tft.setTextColor ( color ) ;                  // Set the requested color
-  tft.setCursor ( 0, pos ) ;                    // Prepare to show the info
-  tft.println ( buf ) ;                         // Show the string
-}
-#else
-#define displayinfo(a,b,c,d)                    // Empty declaration
-#endif
-
-
-//******************************************************************************************
 //                        S H O W S T R E A M T I T L E                                    *
 //******************************************************************************************
 // Show artist and songtitle if present in metadata.                                       *
@@ -1270,15 +705,14 @@ void showstreamtitle ( const char *ml, bool full )
   icystreamtitle = streamtitle ;
   if ( ( p1 = strstr ( streamtitle, " - " ) ) ) // look for artist/title separator
   {
-    *p1++ = '\n' ;                              // Found: replace 3 characters by newline
-    p2 = p1 + 2 ;
-    if ( *p2 == ' ' )                           // Leading space in title?
-    {
-      p2++ ;
-    }
-    strcpy ( p1, p2 ) ;                         // Shift 2nd part of title 2 or 3 places
+    char * artist = streamtitle;
+    *p1 = '\0';
+    char * song = p1 + 3;
+    showNowPlayingInfo(artist, song);
+  } else {
+    showNowPlayingInfo(streamtitle, "");
   }
-  displayinfo ( streamtitle, 20, 40, CYAN ) ;   // Show title at position 20
+
 }
 
 
@@ -1320,7 +754,7 @@ bool connecttohost()
 
   stop_mp3client() ;                                // Disconnect if still connected
   dbgprint ( "Connect to new host %s", host.c_str() ) ;
-  displayinfo ( "   ** Internet radio **", 0, 20, WHITE ) ;
+  displayDebug( "** Internet radio **") ;
   datamode = INIT ;                                 // Start default in metamode
   chunked = false ;                                 // Assume not chunked
   if ( host.endsWith ( ".m3u" ) )                   // Is it an m3u playlist?
@@ -1333,6 +767,12 @@ bool connecttohost()
     }
     dbgprint ( "Playlist request, entry %d", playlist_num ) ;
   }
+  // remove protocol from host
+  if (host.startsWith("http://")) {
+    host = host.substring(7);
+  } else if (host.startsWith("https://")) {
+    host = host.substring(8);
+  }
   // In the URL there may be an extension
   inx = host.indexOf ( "/" ) ;                      // Search for begin of extension
   if ( inx > 0 )                                    // Is there an extension?
@@ -1344,12 +784,17 @@ bool connecttohost()
   inx = host.indexOf ( ":" ) ;                      // Search for separator
   if ( inx >= 0 )                                   // Portnumber available?
   {
-    port = host.substring ( inx + 1 ).toInt() ;     // Get portnumber as integer
+    int slash = host.indexOf('/');
+    if (slash == -1) {
+      port = host.substring(inx+1).toInt() ;     // Get portnumber as integer
+    } else {
+      port = host.substring(inx+1, slash).toInt();
+    }
     hostwoext = host.substring ( 0, inx ) ;         // Host without portnumber
   }
   pfs = dbgprint ( "Connect to %s on port %d, extension %s",
                    hostwoext.c_str(), port, extension.c_str() ) ;
-  displayinfo ( pfs, 60, 66, YELLOW ) ;             // Show info at position 60..125
+  displayDebug(pfs);
   mp3client = new WiFiClient() ;
   if ( mp3client->connect ( hostwoext.c_str(), port ) )
   {
@@ -1380,7 +825,7 @@ bool connecttofile()
   String path ;                                           // Full file spec
   char*  p ;                                              // Pointer to filename
 
-  displayinfo ( "   **** MP3 Player ****", 0, 20, WHITE ) ;
+  displayDebug("**** MP3 Player ****") ;
   path = host.substring ( 9 ) ;                           // Path, skip the "localhost" part
   mp3file = SPIFFS.open ( path, "r" ) ;                   // Open the file
   if ( !mp3file )
@@ -1390,8 +835,7 @@ bool connecttofile()
   }
   p = (char*)path.c_str() + 1 ;                           // Point to filename
   showstreamtitle ( p, true ) ;                           // Show the filename as title
-  displayinfo ( "Playing from local file",
-                60, 68, YELLOW ) ;                        // Show Source at position 60
+  displayDebug("Playing from local file");                // Show Source at position 60
   icyname = "" ;                                          // No icy name yet
   chunked = false ;                                       // File not chunked
   return true ;
@@ -1412,7 +856,8 @@ bool connectwifi()
   WiFi.softAPdisconnect(true) ;                        // still keep the old connection
   WiFi.begin ( ini_block.ssid.c_str(),
                ini_block.passwd.c_str() ) ;            // Connect to selected SSID
-  dbgprint ( "Try WiFi %s", ini_block.ssid.c_str() ) ; // Message to show during WiFi connect
+  displayDebug(dbgprint ( "Try WiFi %s", ini_block.ssid.c_str() )) ; // Message to show during WiFi connect
+
   if (  WiFi.waitForConnectResult() != WL_CONNECTED )  // Try to connect
   {
     dbgprint ( "WiFi Failed!  Trying to setup AP with name %s and password %s.", NAME, NAME ) ;
@@ -1423,9 +868,7 @@ bool connectwifi()
   }
   pfs = dbgprint ( "IP = %d.%d.%d.%d",
                    WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] ) ;
-#if defined ( USETFT )
-  tft.println ( pfs ) ;
-#endif
+  displayDebug(pfs);
   return true ;
 }
 
@@ -1515,133 +958,6 @@ void readinifile()
     dbgprint ( "File %s not found, use save command to create one!", INIFILENAME ) ;
   }
 }
-
-
-//******************************************************************************************
-//                            P U B L I S H I P                                            *
-//******************************************************************************************
-// Publish IP to MQTT broker.                                                              *
-//******************************************************************************************
-void publishIP()
-{
-  IPAddress ip ;
-  char      ipstr[20] ;                          // Hold IP as string
-
-  if ( ini_block.mqttpubtopic.length() )        // Topic to publish?
-  {
-    ip = WiFi.localIP() ;
-    // Publish IP-adress.  qos=1, retain=true
-    sprintf ( ipstr, "%d.%d.%d.%d",
-              ip[0], ip[1], ip[2], ip[3] ) ;
-    mqttclient.publish ( ini_block.mqttpubtopic.c_str(), 1, true, ipstr ) ;
-    dbgprint ( "Publishing IP %s to topic %s",
-               ipstr, ini_block.mqttpubtopic.c_str() ) ;
-  }
-}
-
-
-//******************************************************************************************
-//                            O N M Q T T C O N N E C T                                    *
-//******************************************************************************************
-// Will be called on connection to the broker.  Subscribe to our topic and publish a topic.*
-//******************************************************************************************
-void onMqttConnect( bool sessionPresent )
-{
-  uint16_t    packetIdSub ;
-  const char* present = "is" ;                      // Assume Session is present
-
-  if ( !sessionPresent )
-  {
-    present = "is not" ;                            // Session is NOT present
-  }
-  dbgprint ( "MQTT Connected to the broker %s, session %s present",
-             ini_block.mqttbroker.c_str(), present ) ;
-  packetIdSub = mqttclient.subscribe ( ini_block.mqtttopic.c_str(), 2 ) ;
-  dbgprint ( "Subscribing to %s at QoS 2, packetId = %d ",
-             ini_block.mqtttopic.c_str(),
-             packetIdSub ) ;
-  publishIP() ;                                     // Topic to publish: IP
-}
-
-
-//******************************************************************************************
-//                      O N M Q T T D I S C O N N E C T                                    *
-//******************************************************************************************
-// Will be called on disconnect.                                                           *
-//******************************************************************************************
-void onMqttDisconnect ( AsyncMqttClientDisconnectReason reason )
-{
-  dbgprint ( "MQTT Disconnected from the broker, reason %d, reconnecting...",
-             reason ) ;
-  if ( mqttcount < MAXMQTTCONNECTS )            // Try again?
-  {
-    mqttcount++ ;                               // Yes, count number of tries
-    mqttclient.connect() ;                      // Reconnect
-  }
-}
-
-
-//******************************************************************************************
-//                      O N M Q T T S U B S C R I B E                                      *
-//******************************************************************************************
-// Will be called after a successful subscribe.                                            *
-//******************************************************************************************
-void onMqttSubscribe ( uint16_t packetId, uint8_t qos )
-{
-  dbgprint ( "MQTT Subscribe acknowledged, packetId = %d, QoS = %d",
-             packetId, qos ) ;
-}
-
-
-//******************************************************************************************
-//                              O N M Q T T U N S U B S C R I B E                          *
-//******************************************************************************************
-// Will be executed if this program unsubscribes from a topic.                             *
-// Not used at the moment.                                                                 *
-//******************************************************************************************
-void onMqttUnsubscribe ( uint16_t packetId )
-{
-  dbgprint ( "MQTT Unsubscribe acknowledged, packetId = %d",
-             packetId ) ;
-}
-
-
-//******************************************************************************************
-//                            O N M Q T T M E S S A G E                                    *
-//******************************************************************************************
-// Executed when a subscribed message is received.                                         *
-// Note that message is not delimited by a '\0'.                                           *
-//******************************************************************************************
-void onMqttMessage ( char* topic, char* payload, AsyncMqttClientMessageProperties properties,
-                     size_t len, size_t index, size_t total )
-{
-  char*  reply ;                                    // Result from analyzeCmd
-
-  // Available properties.qos, properties.dup, properties.retain
-  if ( len >= sizeof(cmd) )                         // Message may not be too long
-  {
-    len = sizeof(cmd) - 1 ;
-  }
-  strncpy ( cmd, payload, len ) ;                   // Make copy of message
-  cmd[len] = '\0' ;                                 // Take care of delimeter
-  dbgprint ( "MQTT message arrived [%s], lenght = %d, %s", topic, len, cmd ) ;
-  reply = analyzeCmd ( cmd ) ;                      // Analyze command and handle it
-  dbgprint ( reply ) ;                              // Result for debugging
-}
-
-
-//******************************************************************************************
-//                             O N M Q T T P U B L I S H                                   *
-//******************************************************************************************
-// Will be executed if a message is published by this program.                             *
-// Not used at the moment.                                                                 *
-//******************************************************************************************
-void onMqttPublish ( uint16_t packetId )
-{
-  dbgprint ( "MQTT Publish acknowledged, packetId = %d",
-             packetId ) ;
-}
-
 
 //******************************************************************************************
 //                             S C A N S E R I A L                                         *
@@ -1781,27 +1097,12 @@ void getpresets()
   }
 }
 
-
-//******************************************************************************************
-//                                   S E T U P                                             *
-//******************************************************************************************
-// Setup for the program.                                                                  *
-//******************************************************************************************
-void setup()
-{
+void setup_SPIFFS() {
   FSInfo      fs_info ;                                // Info about SPIFFS
   Dir         dir ;                                    // Directory struct for SPIFFS
   File        f ;                                      // Filehandle
   String      filename ;                               // Name of file found in SPIFFS
 
-  Serial.begin ( 115200 ) ;                            // For debug
-  Serial.println() ;
-  system_update_cpu_freq ( 160 ) ;                     // Set to 80/160 MHz
-  ringbuf = (uint8_t *) malloc ( RINGBFSIZ ) ;         // Create ring buffer
-  xml.init ( xmlbuffer, sizeof(xmlbuffer),             // Initilize XML stream.
-             &XML_callback ) ;
-  memset ( &ini_block, 0, sizeof(ini_block) ) ;        // Init ini_block
-  ini_block.mqttport = 1883 ;                          // Default port for MQTT
   SPIFFS.begin() ;                                     // Enable file system
   // Show some info about the SPIFFS
   SPIFFS.info ( fs_info ) ;
@@ -1818,15 +1119,42 @@ void setup()
     dbgprint ( "%-32s - %7d",                          // Show name and size
                filename.c_str(), f.size() ) ;
   }
+
+}
+
+
+void setup_wifi() {
+  WiFi.setPhyMode ( WIFI_PHY_MODE_11N ) ;              // Force 802.11N connection
+  WiFi.persistent ( false ) ;                          // Do not save SSID and password
+}
+//******************************************************************************************
+//                                   S E T U P                                             *
+//******************************************************************************************
+// Setup for the program.                                                                  *
+//******************************************************************************************
+void setup()
+{
+
+  Serial.begin ( 115200 ) ;                            // For debug
+  setupDisplay();
+
+  Serial.println() ;
+  system_update_cpu_freq ( 160 ) ;                     // Set to 80/160 MHz
+  // ringbuf = (uint8_t *) malloc ( RINGBFSIZ ) ;         // Create ring buffer
+  // xml.init ( xmlbuffer, sizeof(xmlbuffer),             // Initilize XML stream.
+  //            &XML_callback ) ;
+  memset ( &ini_block, 0, sizeof(ini_block) ) ;        // Init ini_block
+
+  setup_SPIFFS();
+
   mk_lsan() ;                                          // Make a list of acceptable networks in ini file.
   listNetworks() ;                                     // Search for WiFi networks
   readinifile() ;                                      // Read .ini file
   getpresets() ;                                       // Get the presets from .ini-file
-  WiFi.setPhyMode ( WIFI_PHY_MODE_11N ) ;              // Force 802.11N connection
-  WiFi.persistent ( false ) ;                          // Do not save SSID and password
-  WiFi.disconnect() ;                                  // The router may keep the old connection
-  WiFi.mode ( WIFI_STA ) ;                             // This ESP is a station
-  wifi_station_set_hostname ( (char*)NAME ) ;
+  setup_wifi();
+  // WiFi.disconnect() ;                                  // The router may keep the old connection
+  // WiFi.mode ( WIFI_STA ) ;                             // This ESP is a station
+  // wifi_station_set_hostname ( (char*)NAME ) ;
   SPI.begin() ;                                        // Init SPI bus
   // Print some memory and sketch info
   dbgprint ( "Starting ESP Version %s...  Free memory %d",
@@ -1835,24 +1163,9 @@ void setup()
   dbgprint ( "Sketch size %d, free size %d",
              ESP.getSketchSize(),
              ESP.getFreeSketchSpace() ) ;
-  pinMode ( BUTTON2, INPUT_PULLUP ) ;                  // Input for control button 2
+//  pinMode ( BUTTON2, INPUT_PULLUP ) ;                  // Input for control button 2
   vs1053player.begin() ;                               // Initialize VS1053 player
-#if defined ( USETFT )
-  tft.begin() ;                                        // Init TFT interface
-  tft.fillRect ( 0, 0, 160, 128, BLACK ) ;             // Clear screen does not work when rotated
-  tft.setRotation ( 3 ) ;                              // Use landscape format
-  tft.clearScreen() ;                                  // Clear screen
-  tft.setTextSize ( 1 ) ;                              // Small character font
-  tft.setTextColor ( WHITE ) ;                         // Info in white
-  tft.println ( "Starting" ) ;
-  tft.println ( "Version:" ) ;
-  tft.println ( VERSION ) ;
-#else
-  pinMode ( BUTTON1, INPUT_PULLUP ) ;                  // Input for control button 1
-  pinMode ( BUTTON3, INPUT_PULLUP ) ;                  // Input for control button 3
-#endif
   delay(10);
-  analogrest = ( analogRead ( A0 ) + asw1 ) / 2  ;     // Assumed inactive analog input
   tckr.attach ( 0.100, timer100 ) ;                    // Every 100 msec
   dbgprint ( "Selected network: %-25s", ini_block.ssid.c_str() ) ;
   NetworkFound = connectwifi() ;                       // Connect to WiFi network
@@ -1867,29 +1180,6 @@ void setup()
     ArduinoOTA.setHostname ( NAME ) ;                  // Set the hostname
     ArduinoOTA.onStart ( otastart ) ;
     ArduinoOTA.begin() ;                               // Allow update over the air
-    if ( ini_block.mqttbroker.length() )               // Broker specified?
-    {
-      // Initialize the MQTT client
-      WiFi.hostByName ( ini_block.mqttbroker.c_str(),
-                        mqtt_server_IP ) ;             // Lookup IP of MQTT server
-      mqttclient.onConnect ( onMqttConnect ) ;
-      mqttclient.onDisconnect ( onMqttDisconnect ) ;
-      mqttclient.onSubscribe ( onMqttSubscribe ) ;
-      mqttclient.onUnsubscribe ( onMqttUnsubscribe ) ;
-      mqttclient.onMessage ( onMqttMessage ) ;
-      mqttclient.onPublish ( onMqttPublish ) ;
-      mqttclient.setServer ( mqtt_server_IP,           // Specify the broker
-                             ini_block.mqttport ) ;    // And the port
-      mqttclient.setCredentials ( ini_block.mqttuser.c_str(),
-                                  ini_block.mqttpasswd.c_str() ) ;
-      mqttclient.setClientId ( NAME ) ;
-      dbgprint ( "Connecting to MQTT %s, port %d, user %s, password %s...",
-                 ini_block.mqttbroker.c_str(),
-                 ini_block.mqttport,
-                 ini_block.mqttuser.c_str(),
-                 ini_block.mqttpasswd.c_str() ) ;
-      mqttclient.connect();
-    }
   }
   else
   {
@@ -1905,36 +1195,36 @@ void setup()
 //******************************************************************************************
 // Process XML tags into variables.                                                        *
 //******************************************************************************************
-void XML_callback ( uint8_t statusflags, char* tagName, uint16_t tagNameLen,
-                    char* data,  uint16_t dataLen )
-{
-  if ( statusflags & STATUS_START_TAG )
-  {
-    if ( tagNameLen )
-    {
-      xmlOpen = String ( tagName ) ;
-      //dbgprint ( "Start tag %s",tagName ) ;
-    }
-  }
-  else if ( statusflags & STATUS_END_TAG )
-  {
-    //dbgprint ( "End tag %s", tagName ) ;
-  }
-  else if ( statusflags & STATUS_TAG_TEXT )
-  {
-    xmlTag = String( tagName ) ;
-    xmlData = String( data ) ;
-    //dbgprint ( Serial.print( "Tag: %s, text: %s", tagName, data ) ;
-  }
-  else if ( statusflags & STATUS_ATTR_TEXT )
-  {
-    //dbgprint ( "Attribute: %s, text: %s", tagName, data ) ;
-  }
-  else if  ( statusflags & STATUS_ERROR )
-  {
-    //dbgprint ( "XML Parsing error  Tag: %s, text: %s", tagName, data ) ;
-  }
-}
+// void XML_callback ( uint8_t statusflags, char* tagName, uint16_t tagNameLen,
+//                     char* data,  uint16_t dataLen )
+// {
+//   if ( statusflags & STATUS_START_TAG )
+//   {
+//     if ( tagNameLen )
+//     {
+//       xmlOpen = String ( tagName ) ;
+//       //dbgprint ( "Start tag %s",tagName ) ;
+//     }
+//   }
+//   else if ( statusflags & STATUS_END_TAG )
+//   {
+//     //dbgprint ( "End tag %s", tagName ) ;
+//   }
+//   else if ( statusflags & STATUS_TAG_TEXT )
+//   {
+//     xmlTag = String( tagName ) ;
+//     xmlData = String( data ) ;
+//     //dbgprint ( Serial.print( "Tag: %s, text: %s", tagName, data ) ;
+//   }
+//   else if ( statusflags & STATUS_ATTR_TEXT )
+//   {
+//     //dbgprint ( "Attribute: %s, text: %s", tagName, data ) ;
+//   }
+//   else if  ( statusflags & STATUS_ERROR )
+//   {
+//     //dbgprint ( "XML Parsing error  Tag: %s, text: %s", tagName, data ) ;
+//   }
+// }
 
 
 //******************************************************************************************
@@ -1942,118 +1232,164 @@ void XML_callback ( uint8_t statusflags, char* tagName, uint16_t tagNameLen,
 //******************************************************************************************
 // Parses streams from XML data.                                                           *
 //******************************************************************************************
-String xmlparse ( String mount )
-{
-  // Example URL for XML Data Stream:
-  // http://playerservices.streamtheworld.com/api/livestream?version=1.5&mount=IHR_TRANAAC&lang=en
-  // Clear all variables for use.
-  char   tmpstr[200] ;                              // Full GET command, later stream URL
-  char   c ;                                        // Next input character from reply
-  String urlout ;                                   // Result URL
-  bool   urlfound = false ;                         // Result found
+// String xmlparse ( String mount )
+// {
+//   // Example URL for XML Data Stream:
+//   // http://playerservices.streamtheworld.com/api/livestream?version=1.5&mount=IHR_TRANAAC&lang=en
+//   // Clear all variables for use.
+//   char   tmpstr[200] ;                              // Full GET command, later stream URL
+//   char   c ;                                        // Next input character from reply
+//   String urlout ;                                   // Result URL
+//   bool   urlfound = false ;                         // Result found
 
-  stationServer = "" ;
-  stationPort = "" ;
-  stationMount = "" ;
-  xmlTag = "" ;
-  xmlData = "" ;
-  stop_mp3client() ; // Stop any current wificlient connections.
-  dbgprint ( "Connect to new iHeartRadio host: %s", mount.c_str() ) ;
-  datamode = INIT ;                                 // Start default in metamode
-  chunked = false ;                                 // Assume not chunked
-  // Create a GET commmand for the request.
-  sprintf ( tmpstr, xmlget, mount.c_str() ) ;
-  dbgprint ( "%s", tmpstr ) ;
-  // Connect to XML stream.
-  mp3client = new WiFiClient() ;
-  if ( mp3client->connect ( xmlhost, xmlport ) ) {
-    dbgprint ( "Connected!" ) ;
-    mp3client->print ( String ( tmpstr ) + " HTTP/1.1\r\n"
-                       "Host: " + xmlhost + "\r\n"
-                       "User-Agent: Mozilla/5.0\r\n"
-                       "Connection: close\r\n\r\n" ) ;
-    // Check for XML Data.
-    while ( true )
-    {
-      if ( mp3client->available() )
-      {
-        char c = mp3client->read() ;
-        if ( c == '<' )
-        {
-          c = mp3client->read() ;
-          if ( c == '?' )
-          {
-            xml.processChar ( '<' ) ;
-            xml.processChar ( '?' ) ;
-            break ;
-          }
-        }
-      }
-      yield() ;
-    }
-    dbgprint ( "XML parser processing..." ) ;
-    // Process XML Data.
-    while (true) 
-    {
-      if ( mp3client->available() )
-      {
-        c = mp3client->read() ;
-        xml.processChar ( c ) ;
-        if ( xmlTag != "" )
-        {
-          if ( xmlTag.endsWith ( "/status-code" ) )   // Status code seen?
-          {
-            if ( xmlData != "200" )                   // Good result?
-            {
-              dbgprint ( "Bad xml status-code %s",    // No, show and stop interpreting
-                          xmlData.c_str() ) ;
-              break ;
-            }
-          }
-          if ( xmlTag.endsWith ( "/ip" ) )
-          {
-            stationServer = xmlData ;
-          }
-          else if ( xmlTag.endsWith ( "/port" ) )
-          {
-            stationPort = xmlData ;
-          }
-          else if ( xmlTag.endsWith ( "/mount"  ) )
-          {
-            stationMount = xmlData ;
-          }
-        }
-      }
-      // Check if all the station values are stored.
-      urlfound = ( stationServer != "" && stationPort != "" && stationMount != "" ) ;
-      if ( urlfound )
-      {
-        xml.reset() ;
-        break ;
-      }
-      yield() ;
-    }
-    tmpstr[0] = '\0' ;                            
-    if ( urlfound )
-    {
-      sprintf ( tmpstr, "%s:%s/%s_SC",                   // Build URL for ESP-Radio to stream.
-                        stationServer.c_str(),
-                        stationPort.c_str(),
-                        stationMount.c_str() ) ;
-      dbgprint ( "Found: %s", tmpstr ) ;
-    }
-    dbgprint ( "Closing XML connection." ) ;
-    stop_mp3client () ;
-  }
-  else
-  {
-    dbgprint ( "Can't connect to XML host!" ) ;
-    tmpstr[0] = '\0' ;                            
-  }
-  return String ( tmpstr ) ;                           // Return final streaming URL.
+//   stationServer = "" ;
+//   stationPort = "" ;
+//   stationMount = "" ;
+//   xmlTag = "" ;
+//   xmlData = "" ;
+//   stop_mp3client() ; // Stop any current wificlient connections.
+//   dbgprint ( "Connect to new iHeartRadio host: %s", mount.c_str() ) ;
+//   datamode = INIT ;                                 // Start default in metamode
+//   chunked = false ;                                 // Assume not chunked
+//   // Create a GET commmand for the request.
+//   sprintf ( tmpstr, xmlget, mount.c_str() ) ;
+//   dbgprint ( "%s", tmpstr ) ;
+//   // Connect to XML stream.
+//   mp3client = new WiFiClient() ;
+//   if ( mp3client->connect ( xmlhost, xmlport ) ) {
+//     dbgprint ( "Connected!" ) ;
+//     mp3client->print ( String ( tmpstr ) + " HTTP/1.1\r\n"
+//                        "Host: " + xmlhost + "\r\n"
+//                        "User-Agent: Mozilla/5.0\r\n"
+//                        "Connection: close\r\n\r\n" ) ;
+//     // Check for XML Data.
+//     while ( true )
+//     {
+//       if ( mp3client->available() )
+//       {
+//         char c = mp3client->read() ;
+//         if ( c == '<' )
+//         {
+//           c = mp3client->read() ;
+//           if ( c == '?' )
+//           {
+//             xml.processChar ( '<' ) ;
+//             xml.processChar ( '?' ) ;
+//             break ;
+//           }
+//         }
+//       }
+//       yield() ;
+//     }
+//     dbgprint ( "XML parser processing..." ) ;
+//     // Process XML Data.
+//     while (true)
+//     {
+//       if ( mp3client->available() )
+//       {
+//         c = mp3client->read() ;
+//         xml.processChar ( c ) ;
+//         if ( xmlTag != "" )
+//         {
+//           if ( xmlTag.endsWith ( "/status-code" ) )   // Status code seen?
+//           {
+//             if ( xmlData != "200" )                   // Good result?
+//             {
+//               dbgprint ( "Bad xml status-code %s",    // No, show and stop interpreting
+//                           xmlData.c_str() ) ;
+//               break ;
+//             }
+//           }
+//           if ( xmlTag.endsWith ( "/ip" ) )
+//           {
+//             stationServer = xmlData ;
+//           }
+//           else if ( xmlTag.endsWith ( "/port" ) )
+//           {
+//             stationPort = xmlData ;
+//           }
+//           else if ( xmlTag.endsWith ( "/mount"  ) )
+//           {
+//             stationMount = xmlData ;
+//           }
+//         }
+//       }
+//       // Check if all the station values are stored.
+//       urlfound = ( stationServer != "" && stationPort != "" && stationMount != "" ) ;
+//       if ( urlfound )
+//       {
+//         xml.reset() ;
+//         break ;
+//       }
+//       yield() ;
+//     }
+//     tmpstr[0] = '\0' ;
+//     if ( urlfound )
+//     {
+//       sprintf ( tmpstr, "%s:%s/%s_SC",                   // Build URL for ESP-Radio to stream.
+//                         stationServer.c_str(),
+//                         stationPort.c_str(),
+//                         stationMount.c_str() ) ;
+//       dbgprint ( "Found: %s", tmpstr ) ;
+//     }
+//     dbgprint ( "Closing XML connection." ) ;
+//   }
+//   else
+//   {
+//     dbgprint ( "Can't connect to XML host!" ) ;
+//     tmpstr[0] = '\0' ;
+//   }
+//   stop_mp3client () ;
+//   return String ( tmpstr ) ;                           // Return final streaming URL.
+// }
+
+
+bool is_playing() {
+  return datamode & ~(STOPPED|STOPREQD);
 }
 
+void stop_playback() {
+  dbgprint("STOP requested");
+  if (localfile) {
+    mp3file.close();
+  } else {
+    stop_mp3client();                               // Disconnect if still connected
+  }
+  handlebyte_ch(0, true);                        // Force flush of buffer
+  vs1053player.setVolume(0);                     // Mute
+  vs1053player.stopSong();                          // Stop playing
+  emptyring();                                      // Empty the ringbuffer
+  datamode = STOPPED;                               // Yes, state becomes STOPPED
+  yield();
+  delay(500);
+  yield();
+}
 
+void feed_ring_buffer() {
+  uint32_t    maxfilechunk; // bytes to read from stream (clamped to 1024)
+
+  if (localfile) {
+    maxfilechunk = mp3file.available();              // Bytes left in file
+    if (maxfilechunk > 1024) maxfilechunk = 1024;
+
+    while (ringspace() && maxfilechunk--) {
+      putring(mp3file.read());                    // Yes, store one byte in ringbuffer
+      yield() ;
+    }
+  } else {
+    maxfilechunk = mp3client->available() ;          // Bytes available from mp3 server
+    if (maxfilechunk > 1024) maxfilechunk = 1024;
+
+    while (ringspace() && maxfilechunk--) {
+      putring(mp3client->read()) ;                // Yes, store one byte in ringbuffer
+      yield();
+    }
+  }
+}
+
+bool local_playback_ended() {
+  return (localfile) && (is_playing()) && ((mp3file.available() == 0) && (ringavail() == 0));
+}
 //******************************************************************************************
 //                                   L O O P                                               *
 //******************************************************************************************
@@ -2068,167 +1404,81 @@ String xmlparse ( String mount )
 //******************************************************************************************
 void loop()
 {
-  uint32_t    maxfilechunk  ;                           // Max number of bytes to read from
                                                         // stream or file
+
   // Try to keep the ringbuffer filled up by adding as much bytes as possible
-  if ( datamode & ( INIT | HEADER | DATA |              // Test op playing
-                    METADATA | PLAYLISTINIT |
-                    PLAYLISTHEADER |
-                    PLAYLISTDATA ) )
-  {
-    if ( localfile )
-    {
-      maxfilechunk = mp3file.available() ;              // Bytes left in file
-      if ( maxfilechunk > 1024 )                        // Reduce byte count for this loop()
-      {
-        maxfilechunk = 1024 ;
-      }
-      while ( ringspace() && maxfilechunk-- )
-      {
-        putring ( mp3file.read() ) ;                    // Yes, store one byte in ringbuffer
-        yield() ;
-      }
-    }
-    else
-    {
-      maxfilechunk = mp3client->available() ;          // Bytes available from mp3 server
-      if ( maxfilechunk > 1024 )                       // Reduce byte count for this loop()
-      {
-        maxfilechunk = 1024 ;
-      }
-      while ( ringspace() && maxfilechunk-- )
-      {
-        putring ( mp3client->read() ) ;                // Yes, store one byte in ringbuffer
-        yield() ;
-      }
-    }
-    yield() ;
+  if (is_playing()) {
+    feed_ring_buffer();
+    yield();
   }
-  while ( vs1053player.data_request() && ringavail() ) // Try to keep VS1053 filled
-  {
-    handlebyte_ch ( getring() ) ;                      // Yes, handle it
+
+  while (vs1053player.data_request() && ringavail()) {// Try to keep VS1053 filled
+    handlebyte_ch(getring());                      // Yes, handle it
   }
   yield() ;
-  if ( datamode == STOPREQD )                          // STOP requested?
-  {
-    dbgprint ( "STOP requested" ) ;
-    if ( localfile )
-    {
-      mp3file.close() ;
-    }
-    else
-    {
-      stop_mp3client() ;                               // Disconnect if still connected
-    }
-    handlebyte_ch ( 0, true ) ;                        // Force flush of buffer
-    vs1053player.setVolume ( 0 ) ;                     // Mute
-    vs1053player.stopSong() ;                          // Stop playing
-    emptyring() ;                                      // Empty the ringbuffer
-    datamode = STOPPED ;                               // Yes, state becomes STOPPED
-#if defined ( USETFT )
-    tft.fillRect ( 0, 0, 160, 128, BLACK ) ;           // Clear screen does not work when rotated
-#endif
-    delay ( 500 ) ;
-  }
-  if ( localfile )
-  {
-    if ( datamode & ( INIT | HEADER | DATA |           // Test op playing
-                      METADATA | PLAYLISTINIT |
-                      PLAYLISTHEADER |
-                      PLAYLISTDATA ) )
-    {
-      if ( ( mp3file.available() == 0 ) && ( ringavail() == 0 ) )
-      {
-        datamode = STOPREQD ;                          // End of local mp3-file detected
-      }
-    }
-  }
-  if ( ini_block.newpreset != currentpreset )          // New station or next from playlist requested?
-  {
-    if ( datamode != STOPPED )                         // Yes, still busy?
-    {
-      datamode = STOPREQD ;                            // Yes, request STOP
-    }
-    else
-    {
-      if ( playlist_num )                               // Playing from playlist?
-      { // Yes, retrieve URL of playlist
+  if (datamode == STOPREQD) stop_playback();
+
+  if (local_playback_ended()) datamode = STOPREQD;
+
+  if (ini_block.newpreset != currentpreset) {        // New station or next from playlist requested?
+    if (datamode != STOPPED) {
+      datamode = STOPREQD;
+    } else {
+      if (playlist_num) {                             // Playing from playlist?
+        // Yes, retrieve URL of playlist
+        dbgprint("from playlist");
         playlist_num += ini_block.newpreset -
                         currentpreset ;                 // Next entry in playlist
         ini_block.newpreset = currentpreset ;           // Stay at current preset
-      }
-      else
-      {
+      } else {
+        if (ini_block.newpreset <= 0) ini_block.newpreset = 1;
         host = readhostfrominifile(ini_block.newpreset) ; // Lookup preset in ini-file
       }
-      dbgprint ( "New preset/file requested (%d/%d) from %s",
-                 currentpreset, playlist_num, host.c_str() ) ;
-      if ( host != ""  )                                // Preset in ini-file?
-      {
+      dbgprint("New preset/file requested (%d/%d) from %s",
+               currentpreset, playlist_num, host.c_str());
+      if (host != "") {                              // Preset in ini-file?
         hostreq = true ;                                // Force this station as new preset
-      }
-      else
-      {
+      } else {
         // This preset is not available, return to preset 0, will be handled in next loop()
-        ini_block.newpreset = 0 ;                       // Wrap to first station
+        ini_block.newpreset = 0;                        // Wrap to first station
       }
     }
   }
-  if ( hostreq )                                        // New preset or station?
-  {
-    hostreq = false ;
-    currentpreset = ini_block.newpreset ;               // Remember current preset
-    
-    localfile = host.startsWith ( "localhost/" ) ;      // Find out if this URL is on localhost
-    if ( localfile )                                    // Play file from localhost?
-    {
-      if ( connecttofile() )                            // Yes, open mp3-file
-      {
+  if (hostreq) {                                      // New preset or station?
+    hostreq = false;
+    currentpreset = ini_block.newpreset;               // Remember current preset
+
+    localfile = host.startsWith("localhost/");      // Find out if this URL is on localhost
+    if (localfile) {                                  // Play file from localhost?
+      if (connecttofile()) {                          // Yes, open mp3-file
         datamode = DATA ;                               // Start in DATA mode
       }
-    }
-    else
-    {
-      if ( host.startsWith ( "ihr/" ) )                 // iHeartRadio station requested?
-      {
-        host = host.substring ( 4 ) ;                   // Yes, remove "ihr/"
-        host = xmlparse ( host ) ;                      // Parse the xml to get the host
-      }
+    } else {
       connecttohost() ;                                 // Switch to new host
+      yield();
     }
   }
-  if ( xmlreq )                                         // Directly xml requested?
-  {
-    xmlreq = false ;                                    // Yes, clear request flag
-    host = xmlparse ( host ) ;                          // Parse the xml to get the host
-    connecttohost() ;                                   // and connect to this host
+  if (reqtone) {                                      // Request to change tone?
+    reqtone = false;
+    vs1053player.setTone(ini_block.rtone);          // Set SCI_BASS to requested value
   }
-  if ( reqtone )                                        // Request to change tone?
-  {
-    reqtone = false ;
-    vs1053player.setTone ( ini_block.rtone ) ;          // Set SCI_BASS to requested value
-  }
-  if ( resetreq )                                       // Reset requested?
-  {
+  if (resetreq) {                                     // Reset requested?
+    dbgprint("#####RESET#####");
     delay ( 1000 ) ;                                    // Yes, wait some time
     ESP.restart() ;                                     // Reboot
   }
-  if ( muteflag )
-  {
-    vs1053player.setVolume ( 0 ) ;                      // Mute
+  if (muteflag) {
+    vs1053player.setVolume(0);                      // Mute
+  } else {
+    vs1053player.setVolume(ini_block.reqvol);       // Unmute
   }
-  else
-  {
-    vs1053player.setVolume ( ini_block.reqvol ) ;       // Unmute
+  displayvolume();                                     // Show volume on display
+  if (testfilename.length()) {                        // File to test?
+    testfile(testfilename);                         // Yes, do the test
+    testfilename = "";                                 // Clear test request
   }
-  displayvolume() ;                                     // Show volume on display
-  if ( testfilename.length() )                          // File to test?
-  {
-    testfile ( testfilename ) ;                         // Yes, do the test
-    testfilename = "" ;                                 // Clear test request
-  }
-  scanserial() ;                                        // Handle serial input
-  ArduinoOTA.handle() ;                                 // Check for OTA
+  scanserial();                                        // Handle serial input
+  ArduinoOTA.handle();                                 // Check for OTA
 }
 
 
@@ -2238,33 +1488,32 @@ void loop()
 // Check if a line in the header is a reasonable headerline.                               *
 // Normally it should contain something like "icy-xxxx:abcdef".                            *
 //******************************************************************************************
-bool chkhdrline ( const char* str )
+bool is_reasonable_header_line ( const char* str )
 {
   char    b ;                                         // Byte examined
   int     len = 0 ;                                   // Lengte van de string
 
-  while ( ( b = *str++ ) )                            // Search to end of string
-  {
+  while ((b = *str++)) {                              // Search to end of string
     len++ ;                                           // Update string length
-    if ( ! isalpha ( b ) )                            // Alpha (a-z, A-Z)
-    {
-      if ( b != '-' )                                 // Minus sign is allowed
-      {
-        if ( b == ':' )                               // Found a colon?
-        {
-          return ( ( len > 5 ) && ( len < 50 ) ) ;    // Yes, okay if length is okay
-        }
-        else
-        {
-          return false ;                              // Not a legal character
-        }
-      }
+    if (b == ':') {                                   // Found a colon?
+      return ((len > 5) && (len < 50));               // Yes, okay if length is okay
+    }
+    if (!isalpha(b) && (b != '-') ) {
+      return false;                                   // Not a legal character
     }
   }
   return false ;                                      // End of string without colon
 }
 
+bool in_data_mode() {
+  return datamode & (DATA|METADATA|PLAYLISTDATA);
+}
 
+uint8_t hex_byte_to_int(uint8_t b) {
+  uint8_t ret = toupper(b) - '0';  // Be sure we have uppercase
+  if (ret > 9) ret -= 7;           // Translate A..F to 10..15
+  return ret;
+}
 //******************************************************************************************
 //                           H A N D L E B Y T E _ C H                                     *
 //******************************************************************************************
@@ -2275,44 +1524,30 @@ void handlebyte_ch ( uint8_t b, bool force )
 {
   static int  chunksize = 0 ;                         // Chunkcount read from stream
 
-  if ( chunked && !force && 
-       ( datamode & ( DATA |                          // Test op DATA handling
-                      METADATA |
-                      PLAYLISTDATA ) ) )
-  {
-    if ( chunkcount == 0 )                            // Expecting a new chunkcount?
-    {
-       if ( b == '\r' )                               // Skip CR
-       {
-         return ;      
-       }
-       else if ( b == '\n' )                          // LF ?
-       {
-         chunkcount = chunksize ;                     // Yes, set new count
-         chunksize = 0 ;                              // For next decode
-         return ;
-       }
-       // We have received a hexadecimal character.  Decode it and add to the result.
-       b = toupper ( b ) - '0' ;                      // Be sure we have uppercase
-       if ( b > 9 )
-       {
-         b = b - 7 ;                                  // Translate A..F to 10..15
-       }
-       chunksize = ( chunksize << 4 ) + b ;
-    }
-    else
-    {
-      handlebyte ( b, force ) ;                       // Normal data byte
+  if (chunked && !force && in_data_mode()) {
+    if (chunkcount == 0) {
+      if (b == '\r') {
+        return ;
+      } else if (b == '\n') {
+        chunkcount = chunksize ;                     // Yes, set new count
+        chunksize = 0 ;                              // For next decode
+        return ;
+      }
+      // We have received a hexadecimal character.  Decode it and add to the result.
+      b = hex_byte_to_int(b);
+      chunksize = (chunksize << 4) + b ;
+    } else {
+      handlebyte(b, force);                       // Normal data byte
       chunkcount-- ;                                  // Update count to next chunksize block
     }
-  }
-  else
-  {
-    handlebyte ( b, force ) ;                         // Normal handling of this byte
+  } else {
+    handlebyte(b, force);                         // Normal handling of this byte
   }
 }
 
-
+bool should_ignore_header_character(char c) {
+  return (c > 0x7F) || (c == '\r') || (c == '\0');
+}
 //******************************************************************************************
 //                           H A N D L E B Y T E                                           *
 //******************************************************************************************
@@ -2325,266 +1560,218 @@ void handlebyte ( uint8_t b, bool force )
 {
   static uint16_t  playlistcnt ;                       // Counter to find right entry in playlist
   static bool      firstmetabyte ;                     // True if first metabyte (counter)
-  static int       LFcount ;                           // Detection of end of header
+  static int       lineFeedCount ;                           // Detection of end of header
   static __attribute__((aligned(4))) uint8_t buf[32] ; // Buffer for chunk
   static int       bufcnt = 0 ;                        // Data in chunk
   static bool      firstchunk = true ;                 // First chunk as input
-  String           lcml ;                              // Lower case metaline
-  String           ct ;                                // Contents type
-  static bool      ctseen = false ;                    // First line of header seen or not
+  String           lowerCaseMetaline ;                              // Lower case metaline
+  String           contentType ;                                // Contents type
+  static bool      foundContentType = false ;                    // First line of header seen or not
   int              inx ;                               // Pointer in metaline
   int              i ;                                 // Loop control
 
-  if ( datamode == INIT )                              // Initialize for header receive
-  {
-    ctseen = false ;                                   // Contents type not seen yet
-    metaint = 0 ;                                      // No metaint found
-    LFcount = 0 ;                                      // For detection end of header
-    bitrate = 0 ;                                      // Bitrate still unknown
-    dbgprint ( "Switch to HEADER" ) ;
-    datamode = HEADER ;                                // Handle header
-    totalcount = 0 ;                                   // Reset totalcount
-    metaline = "" ;                                    // No metadata yet
-    firstchunk = true ;                                // First chunk expected
-  }
-  if ( datamode == DATA )                              // Handle next byte of MP3/Ogg data
-  {
-    buf[bufcnt++] = b ;                                // Save byte in chunkbuffer
-    if ( bufcnt == sizeof(buf) || force )              // Buffer full?
-    {
-      if ( firstchunk )
-      {
-        firstchunk = false ;
-        dbgprint ( "First chunk:" ) ;                  // Header for printout of first chunk
-        for ( i = 0 ; i < 32 ; i += 8 )                // Print 4 lines
-        {
-          dbgprint ( "%02X %02X %02X %02X %02X %02X %02X %02X",
-                     buf[i],   buf[i + 1], buf[i + 2], buf[i + 3],
-                     buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7] ) ;
-        }
-      }
-      vs1053player.playChunk ( buf, bufcnt ) ;         // Yes, send to player
-      bufcnt = 0 ;                                     // Reset count
+  switch(datamode) {
+    case INIT: {
+      foundContentType = false ;                                   // Contents type not seen yet
+      metaint = 0 ;                                      // No metaint found
+      lineFeedCount = 0 ;                                      // For detection end of header
+      bitrate = 0 ;                                      // Bitrate still unknown
+      dbgprint ( "Switch to HEADER" ) ;
+      datamode = HEADER ;                                // Handle header
+      totalcount = 0 ;                                   // Reset totalcount
+      metaline = "" ;                                    // No metadata yet
+      firstchunk = true ;                                // First chunk expected
+      break;
     }
-    totalcount++ ;                                     // Count number of bytes, ignore overflow
-    if ( metaint != 0 )                                // No METADATA on Ogg streams or mp3 files
-    {
-      if ( --datacount == 0 )                          // End of datablock?
-      {
-        if ( bufcnt )                                  // Yes, still data in buffer?
-        {
-          vs1053player.playChunk ( buf, bufcnt ) ;     // Yes, send to player
-          bufcnt = 0 ;                                 // Reset count
-        }
-        datamode = METADATA ;
-        firstmetabyte = true ;                         // Expecting first metabyte (counter)
-      }
-    }
-    return ;
-  }
-  if ( datamode == HEADER )                            // Handle next byte of MP3 header
-  {
-    if ( ( b > 0x7F ) ||                               // Ignore unprintable characters
-         ( b == '\r' ) ||                              // Ignore CR
-         ( b == '\0' ) )                               // Ignore NULL
-    {
-      // Yes, ignore
-    }
-    else if ( b == '\n' )                              // Linefeed ?
-    {
-      LFcount++ ;                                      // Count linefeeds
-      if ( chkhdrline ( metaline.c_str() ) )           // Reasonable input?
-      {
-        lcml = metaline ;                              // Use lower case for compare
-        lcml.toLowerCase() ;
-        dbgprint ( metaline.c_str() ) ;                // Yes, Show it
-        if ( lcml.indexOf ( "content-type" ) >= 0 )    // Line with "Content-Type: xxxx/yyy"
-        {
-          ctseen = true ;                              // Yes, remember seeing this
-          ct = metaline.substring ( 14 ) ;             // Set contentstype. Not used yet
-          dbgprint ( "%s seen.", ct.c_str() ) ;
-        }
-        if ( lcml.startsWith ( "icy-br:" ) )
-        {
-          bitrate = metaline.substring(7).toInt() ;    // Found bitrate tag, read the bitrate
-          if ( bitrate == 0 )                          // For Ogg br is like "Quality 2"
-          {
-            bitrate = 87 ;                             // Dummy bitrate
+
+    case HEADER: {
+      if (should_ignore_header_character(b)) {
+        break;
+      } else if ( b == '\n' ) {                            // Linefeed ?
+        lineFeedCount++ ;                                      // Count linefeeds
+        if (is_reasonable_header_line(metaline.c_str())) {
+          lowerCaseMetaline = metaline;                              // Use lower case for compare
+          lowerCaseMetaline.toLowerCase();
+          dbgprint (metaline.c_str()) ;                // Yes, Show it
+          if (lowerCaseMetaline.indexOf("content-type") >= 0) {  // Line with "Content-Type: xxxx/yyy"
+            foundContentType = true ;                              // Yes, remember seeing this
+            contentType = metaline.substring ( 14 ) ;             // Set contentstype. Not used yet
+            showContentType(contentType.c_str());
+            dbgprint ( "%s seen.", contentType.c_str() ) ;
+          }
+          if ( lowerCaseMetaline.startsWith ( "icy-br:" ) ) {
+            bitrate = metaline.substring(7).toInt() ;    // Found bitrate tag, read the bitrate
+            if ( bitrate == 0 )                          // For Ogg br is like "Quality 2"
+            {
+              bitrate = 87 ;                             // Dummy bitrate
+            }
+          }
+          else if ( lowerCaseMetaline.startsWith ( "icy-metaint:" ) ) {
+            metaint = metaline.substring(12).toInt() ;   // Found metaint tag, read the value
+          }
+          else if ( lowerCaseMetaline.startsWith ( "icy-name:" ) ) {
+            icyname = metaline.substring(9) ;            // Get station name
+            icyname.trim() ;                             // Remove leading and trailing spaces
+          }
+          else if ( lowerCaseMetaline.startsWith ( "transfer-encoding:" ) ) {
+            // Station provides chunked transfer
+            if ( lowerCaseMetaline.endsWith ( "chunked" ) ) {
+              chunked = true ;                           // Remember chunked transfer mode
+              chunkcount = 0 ;                           // Expect chunkcount in DATA
+            }
+          }
+          else if ( lowerCaseMetaline.startsWith ( "icy-description:" ) ) {
+            showStationName(metaline.substring(16).c_str());
           }
         }
-        else if ( lcml.startsWith ( "icy-metaint:" ) )
-        {
-          metaint = metaline.substring(12).toInt() ;   // Found metaint tag, read the value
+        metaline = "" ;                                  // Reset this line
+        if ( ( lineFeedCount == 2 ) && foundContentType ) {              // Some data seen and a double LF?
+          dbgprint ( "Switch to DATA, bitrate is %d"     // Show bitrate
+                    ", metaint is %d",                  // and metaint
+                    bitrate, metaint ) ;
+          datamode = DATA ;                              // Expecting data now
+          datacount = metaint ;                          // Number of bytes before first metadata
+          bufcnt = 0 ;                                   // Reset buffer count
+          vs1053player.startSong() ;                     // Start a new song
         }
-        else if ( lcml.startsWith ( "icy-name:" ) )
-        {
-          icyname = metaline.substring(9) ;            // Get station name
-          icyname.trim() ;                             // Remove leading and trailing spaces
-          displayinfo ( icyname.c_str(), 60, 68,
-                        YELLOW ) ;                     // Show station name at position 60
+      } else {
+        metaline += (char)b ;                            // Normal character, put new char in metaline
+        lineFeedCount = 0 ;                                    // Reset double CRLF detection
+      }
+      break;
+    }
+
+    case METADATA: {
+      if (firstmetabyte) {                             // First byte of metadata?
+        firstmetabyte = false ;                          // Not the first anymore
+        metacount = b * 16 + 1 ;                         // New count for metadata including length byte
+        if (metacount > 1) {
+          dbgprint ( "Metadata block %d bytes",
+                    metacount - 1 ) ;                   // Most of the time there are zero bytes of metadata
         }
-        else if ( lcml.startsWith ( "transfer-encoding:" ) )
-        {
-          // Station provides chunked transfer
-          if ( lcml.endsWith ( "chunked" ) )
-          {
-            chunked = true ;                           // Remember chunked transfer mode
-            chunkcount = 0 ;                           // Expect chunkcount in DATA
+        metaline = "" ;                                  // Set to empty
+      } else {
+        metaline += (char)b ;                            // Normal character, put new char in metaline
+      }
+      if (--metacount == 0) {
+        if (metaline.length()) {                       // Any info present?
+          // metaline contains artist and song name.  For example:
+          // "StreamTitle='Don McLean - American Pie';StreamUrl='';"
+          // Sometimes it is just other info like:
+          // "StreamTitle='60s 03 05 Magic60s';StreamUrl='';"
+          // Isolate the StreamTitle, remove leading and trailing quotes if present.
+          showstreamtitle ( metaline.c_str() ) ;         // Show artist and title if present in metadata
+        }
+        if (metaline.length() > 1500) {                // Unlikely metaline length?
+          dbgprint ( "Metadata block too long! Skipping all Metadata from now on." ) ;
+          metaint = 0 ;                                  // Probably no metadata
+          metaline = "" ;                                // Do not waste memory on this
+        }
+        datacount = metaint ;                            // Reset data count
+        bufcnt = 0 ;                                     // Reset buffer count
+        datamode = DATA ;                                // Expecting data
+      }
+      break;
+    }
+
+    case DATA: {
+      buf[bufcnt++] = b ;                                // Save byte in chunkbuffer
+      if (bufcnt == sizeof(buf) || force) {            // Buffer full?
+        if (firstchunk) {
+          firstchunk = false ;
+          dbgprint("First chunk:");                  // Header for printout of first chunk
+          for (i = 0; i < 32; i += 8) {              // Print 4 lines
+            dbgprint("%02X %02X %02X %02X %02X %02X %02X %02X",
+                     buf[i+0], buf[i+1], buf[i+2], buf[i+3],
+                     buf[i+4], buf[i+5], buf[i+6], buf[i+7]);
           }
         }
+        vs1053player.playChunk(buf, bufcnt) ;         // Yes, send to player
+        bufcnt = 0 ;                                     // Reset count
       }
-      metaline = "" ;                                  // Reset this line
-      if ( ( LFcount == 2 ) && ctseen )                // Some data seen and a double LF?
-      {
-        dbgprint ( "Switch to DATA, bitrate is %d"     // Show bitrate
-                   ", metaint is %d",                  // and metaint
-                   bitrate, metaint ) ;
-        datamode = DATA ;                              // Expecting data now
-        datacount = metaint ;                          // Number of bytes before first metadata
-        bufcnt = 0 ;                                   // Reset buffer count
-        vs1053player.startSong() ;                     // Start a new song
+      totalcount++ ;                                     // Count number of bytes, ignore overflow
+      if ( metaint != 0 ) {                              // No METADATA on Ogg streams or mp3 files
+        if ( --datacount == 0 ) {                        // End of datablock?
+          if ( bufcnt ) {                                // Yes, still data in buffer?
+            vs1053player.playChunk ( buf, bufcnt ) ;     // Yes, send to player
+            bufcnt = 0 ;                                 // Reset count
+          }
+          datamode = METADATA ;
+          firstmetabyte = true ;                         // Expecting first metabyte (counter)
+        }
       }
+      break;
     }
-    else
-    {
-      metaline += (char)b ;                            // Normal character, put new char in metaline
-      LFcount = 0 ;                                    // Reset double CRLF detection
+
+    case PLAYLISTINIT: {
+      // We are going to use metadata to read the lines from the .m3u file
+      metaline = "" ;                                    // Prepare for new line
+      lineFeedCount = 0 ;                                // For detection end of header
+      datamode = PLAYLISTHEADER ;                        // Handle playlist data
+      playlistcnt = 1 ;                                  // Reset for compare
+      totalcount = 0 ;                                   // Reset totalcount
+      dbgprint ( "Read from playlist" ) ;
+      break;
     }
-    return ;
-  }
-  if ( datamode == METADATA )                          // Handle next byte of metadata
-  {
-    if ( firstmetabyte )                               // First byte of metadata?
-    {
-      firstmetabyte = false ;                          // Not the first anymore
-      metacount = b * 16 + 1 ;                         // New count for metadata including length byte
-      if ( metacount > 1 )
-      {
-        dbgprint ( "Metadata block %d bytes",
-                   metacount - 1 ) ;                   // Most of the time there are zero bytes of metadata
+
+    case PLAYLISTHEADER: {
+      if (should_ignore_header_character(b)) {
+        break;
       }
-      metaline = "" ;                                  // Set to empty
-    }
-    else
-    {
-      metaline += (char)b ;                            // Normal character, put new char in metaline
-    }
-    if ( --metacount == 0 )
-    {
-      if ( metaline.length() )                         // Any info present?
-      {
-        // metaline contains artist and song name.  For example:
-        // "StreamTitle='Don McLean - American Pie';StreamUrl='';"
-        // Sometimes it is just other info like:
-        // "StreamTitle='60s 03 05 Magic60s';StreamUrl='';"
-        // Isolate the StreamTitle, remove leading and trailing quotes if present.
-        showstreamtitle ( metaline.c_str() ) ;         // Show artist and title if present in metadata
+      else if ( b == '\n' ) {                            // Linefeed ?
+        lineFeedCount++ ;                                      // Count linefeeds
+        dbgprint ( "Playlistheader: %s",                 // Show playlistheader
+                  metaline.c_str() ) ;
+        metaline = "" ;                                  // Ready for next line
+        if ( lineFeedCount == 2 ) {
+          dbgprint ( "Switch to PLAYLISTDATA" ) ;
+          datamode = PLAYLISTDATA ;                      // Expecting data now
+          break;
+        }
+      } else {
+        metaline += (char)b ;                            // Normal character, put new char in metaline
+        lineFeedCount = 0 ;                                    // Reset double CRLF detection
       }
-      if ( metaline.length() > 1500 )                  // Unlikely metaline length?
-      {
-        dbgprint ( "Metadata block too long! Skipping all Metadata from now on." ) ;
-        metaint = 0 ;                                  // Probably no metadata
-        metaline = "" ;                                // Do not waste memory on this
-      }
-      datacount = metaint ;                            // Reset data count
-      bufcnt = 0 ;                                     // Reset buffer count
-      datamode = DATA ;                                // Expecting data
+      break;
     }
-  }
-  if ( datamode == PLAYLISTINIT )                      // Initialize for receive .m3u file
-  {
-    // We are going to use metadata to read the lines from the .m3u file
-    metaline = "" ;                                    // Prepare for new line
-    LFcount = 0 ;                                      // For detection end of header
-    datamode = PLAYLISTHEADER ;                        // Handle playlist data
-    playlistcnt = 1 ;                                  // Reset for compare
-    totalcount = 0 ;                                   // Reset totalcount
-    dbgprint ( "Read from playlist" ) ;
-  }
-  if ( datamode == PLAYLISTHEADER )                    // Read header
-  {
-    if ( ( b > 0x7F ) ||                               // Ignore unprintable characters
-         ( b == '\r' ) ||                              // Ignore CR
-         ( b == '\0' ) )                               // Ignore NULL
-    {
-      // Yes, ignore
-    }
-    else if ( b == '\n' )                              // Linefeed ?
-    {
-      LFcount++ ;                                      // Count linefeeds
-      dbgprint ( "Playlistheader: %s",                 // Show playlistheader
-                 metaline.c_str() ) ;
-      metaline = "" ;                                  // Ready for next line
-      if ( LFcount == 2 )
-      {
-        dbgprint ( "Switch to PLAYLISTDATA" ) ;
-        datamode = PLAYLISTDATA ;                      // Expecting data now
-        return ;
-      }
-    }
-    else
-    {
-      metaline += (char)b ;                            // Normal character, put new char in metaline
-      LFcount = 0 ;                                    // Reset double CRLF detection
-    }
-  }
-  if ( datamode == PLAYLISTDATA )                      // Read next byte of .m3u file data
-  {
-    if ( ( b > 0x7F ) ||                               // Ignore unprintable characters
-         ( b == '\r' ) ||                              // Ignore CR
-         ( b == '\0' ) )                               // Ignore NULL
-    {
-      // Yes, ignore
-    }
-    else if ( b == '\n' )                              // Linefeed ?
-    {
-      dbgprint ( "Playlistdata: %s",                   // Show playlistheader
-                 metaline.c_str() ) ;
-      if ( metaline.length() < 5 )                     // Skip short lines
-      {
-        return ;
-      }
-      if ( metaline.indexOf ( "#EXTINF:" ) >= 0 )      // Info?
-      {
-        if ( playlist_num == playlistcnt )             // Info for this entry?
-        {
-          inx = metaline.indexOf ( "," ) ;             // Comma in this line?
-          if ( inx > 0 )
-          {
-            // Show artist and title if present in metadata
-            showstreamtitle ( metaline.substring ( inx + 1 ).c_str(), true ) ;
+
+    case PLAYLISTDATA: {
+      if (should_ignore_header_character(b)) {
+        break;
+      } else if ( b == '\n' ) {                            // Linefeed ?
+        dbgprint ( "Playlistdata: %s",                   // Show playlistheader
+                  metaline.c_str() ) ;
+        if ( metaline.length() < 5 ) {                   // Skip short lines
+          break;
+        }
+        if ( metaline.indexOf ( "#EXTINF:" ) >= 0 ) {    // Info?
+          if ( playlist_num == playlistcnt ) {           // Info for this entry?
+            inx = metaline.indexOf ( "," ) ;             // Comma in this line?
+            if ( inx > 0 ) {
+              // Show artist and title if present in metadata
+              showstreamtitle ( metaline.substring ( inx + 1 ).c_str(), true ) ;
+            }
           }
         }
-      }
-      if ( metaline.startsWith ( "#" ) )               // Commentline?
-      {
-        metaline = "" ;
-        return ;                                       // Ignore commentlines
-      }
-      // Now we have an URL for a .mp3 file or stream.  Is it the rigth one?
-      dbgprint ( "Entry %d in playlist found: %s", playlistcnt, metaline.c_str() ) ;
-      if ( playlist_num == playlistcnt  )
-      {
-        inx = metaline.indexOf ( "http://" ) ;         // Search for "http://"
-        if ( inx >= 0 )                                // Does URL contain "http://"?
-        {
-          host = metaline.substring ( inx + 7 ) ;      // Yes, remove it and set host
+        if ( metaline.startsWith ( "#" ) ) {             // Commentline?
+          metaline = "" ;
+          break;                                       // Ignore commentlines
         }
-        else
-        {
+        // Now we have an URL for a .mp3 file or stream.  Is it the rigth one?
+        dbgprint ( "Entry %d in playlist found: %s", playlistcnt, metaline.c_str() ) ;
+        if (playlist_num == playlistcnt) {
           host = metaline ;                            // Yes, set new host
+          connecttohost() ;                              // Connect to it
         }
-        connecttohost() ;                              // Connect to it
+        metaline = "" ;
+        host = playlist ;                                // Back to the .m3u host
+        playlistcnt++ ;                                  // Next entry in playlist
+      } else {
+        metaline += (char)b ;                            // Normal character, add it to metaline
       }
-      metaline = "" ;
-      host = playlist ;                                // Back to the .m3u host
-      playlistcnt++ ;                                  // Next entry in playlist
+      break;
     }
-    else
-    {
-      metaline += (char)b ;                            // Normal character, add it to metaline
-    }
-    return ;
+
   }
 }
 
@@ -2760,7 +1947,12 @@ String chomp ( String str )
 
   if ( ( inx = str.indexOf ( "#" ) ) >= 0 )           // Comment line or partial comment?
   {
-    str.remove ( inx ) ;                              // Yes, remove
+    if (inx > 0 || str[inx-1] == '\\') {
+      dbgprint("removing escape from %s", str.c_str());
+      str.remove(inx-1,1);
+    } else {
+      str.remove ( inx ) ;                              // Yes, remove
+    }
   }
   str.trim() ;                                        // Remove spaces and CR
   return str ;                                        // Return the result
@@ -2892,14 +2084,9 @@ char* analyzeCmd ( const char* par, const char* val )
   }
   else if ( argument == "stop" )                      // Stop requested?
   {
-    if ( datamode & ( HEADER | DATA | METADATA | PLAYLISTINIT |
-                      PLAYLISTHEADER | PLAYLISTDATA ) )
-
-    {
+    if (is_playing()) {
       datamode = STOPREQD ;                           // Request STOP
-    }
-    else
-    {
+    } else {
       strcpy ( reply, "Command not accepted!" ) ;     // Error reply
     }
   }
@@ -2912,9 +2099,7 @@ char* analyzeCmd ( const char* par, const char* val )
   }
   else if ( argument == "station" )                   // Station in the form address:port
   {
-    if ( datamode & ( HEADER | DATA | METADATA | PLAYLISTINIT |
-                      PLAYLISTHEADER | PLAYLISTDATA ) )
-    {
+    if (is_playing()) {
       datamode = STOPREQD ;                           // Request STOP
     }
     host = value ;                                    // Save it for storage and selection later
@@ -2923,19 +2108,19 @@ char* analyzeCmd ( const char* par, const char* val )
               "New preset station %s accepted",       // Format reply
               host.c_str() ) ;
   }
-  else if ( argument == "xml" )
-  {
-    if ( datamode & ( HEADER | DATA | METADATA | PLAYLISTINIT |
-                      PLAYLISTHEADER | PLAYLISTDATA ) )
-    {
-      datamode = STOPREQD ;                           // Request STOP
-    }
-    host = value ;                                    // Save it for storage and selection later
-    xmlreq = true ;                                   // Run XML parsing process.
-    sprintf ( reply,
-              "New xml preset station %s accepted",   // Format reply
-              host.c_str() ) ;
-  }
+  // else if ( argument == "xml" )
+  // {
+  //   if ( datamode & ( HEADER | DATA | METADATA | PLAYLISTINIT |
+  //                     PLAYLISTHEADER | PLAYLISTDATA ) )
+  //   {
+  //     datamode = STOPREQD ;                           // Request STOP
+  //   }
+  //   host = value ;                                    // Save it for storage and selection later
+  //   xmlreq = true ;                                   // Run XML parsing process.
+  //   sprintf ( reply,
+  //             "New xml preset station %s accepted",   // Format reply
+  //             host.c_str() ) ;
+  // }
   else if ( argument == "status" )                    // Status request
   {
     if ( datamode == STOPPED )
@@ -2988,38 +2173,10 @@ char* analyzeCmd ( const char* par, const char* val )
   {
     vs1053player.AdjustRate ( ivalue ) ;              // Yes, adjust
   }
-  else if ( argument.startsWith ( "mqtt" ) )          // Parameter fo MQTT?
-  {
-    strcpy ( reply, "MQTT broker parameter changed. Save and restart to have effect" ) ;
-    if ( argument.indexOf ( "broker" ) > 0 )          // Broker specified?
-    {
-      ini_block.mqttbroker = value.c_str() ;          // Yes, set broker accordingly
-    }
-    else if ( argument.indexOf ( "port" ) > 0 )       // Port specified?
-    {
-      ini_block.mqttport = ivalue ;                   // Yes, set port user accordingly
-    }
-    else if ( argument.indexOf ( "user" ) > 0 )       // User specified?
-    {
-      ini_block.mqttuser = value ;                    // Yes, set user accordingly
-    }
-    else if ( argument.indexOf ( "passwd" ) > 0 )     // Password specified?
-    {
-      ini_block.mqttpasswd = value.c_str() ;          // Yes, set broker password accordingly
-    }
-    else if ( argument.indexOf ( "pubtopic" ) > 0 )   // Publish topic specified?
-    {
-      ini_block.mqttpubtopic = value.c_str() ;        // Yes, set broker password accordingly
-    }
-    else if ( argument.indexOf ( "topic" ) > 0 )      // Topic specified?
-    {
-      ini_block.mqtttopic = value.c_str() ;           // Yes, set broker topic accordingly
-    }
-  }
-  else if ( argument == "debug" )                     // debug on/off request?
-  {
-    DEBUG = ivalue ;                                  // Yes, set flag accordingly
-  }
+  // else if ( argument == "debug" )                     // debug on/off request?
+  // {
+  //   DEBUG = ivalue ;                                  // Yes, set flag accordingly
+  // }
   else if ( argument == "analog" )                    // Show analog request?
   {
     sprintf ( reply, "Analog input = %d units",       // Read the analog input for test
