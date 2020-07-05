@@ -7,14 +7,10 @@
 // ESP8266 libraries used:
 //  - ESP8266WiFi       - Part of ESP8266 Arduino default libraries.
 //  - SPI               - Part of Arduino default libraries.
-//  - Adafruit_GFX      - https://github.com/adafruit/Adafruit-GFX-Library
-//  - TFT_ILI9163C      - https://github.com/sumotoy/TFT_ILI9163C
 //  - ESPAsyncTCP       - https://github.com/me-no-dev/ESPAsyncTCP
 //  - ESPAsyncWebServer - https://github.com/me-no-dev/ESPAsyncWebServer
 //  - FS - https://github.com/esp8266/arduino-esp8266fs-plugin/releases/download/0.2.0/ESP8266FS-0.2.0.zip
 //  - ArduinoOTA        - Part of ESP8266 Arduino default libraries.
-//  - AsyncMqttClient   - https://github.com/marvinroger/async-mqtt-client
-//  - TinyXML           - Fork https://github.com/adafruit/TinyXML
 //
 // A library for the VS1053 (for ESP8266) is not available (or not easy to find).  Therefore
 // a class for this module is derived from the maniacbug library and integrated in this sketch.
@@ -136,7 +132,7 @@
 // 23-04-2018, ES: Check BASS setting.
 //
 // Define the version number, also used for webserver as Last-Modified header:
-#define VERSION "Tue, 23 Apr 2019 09:10:00 GMT"
+#define VERSION "Arthur Ferrai v1.0"
 #define DEBUG
 // TFT.  Define USETFT if required.
 //#define USETFT
@@ -149,7 +145,6 @@
 #include <string.h>
 #include <FS.h>
 #include <ArduinoOTA.h>
-#include <TinyXML.h>
 #include "VS1053.h"
 #include "debug.h"
 #include "display.h"
@@ -201,7 +196,6 @@ void   handleFileUpload ( AsyncWebServerRequest* request, String filename,
 char*  analyzeCmd ( const char* str ) ;
 char*  analyzeCmd ( const char* par, const char* val ) ;
 String chomp ( String str ) ;
-// String xmlparse ( String mount ) ;
 bool   connecttohost() ;
 
 
@@ -240,7 +234,6 @@ WiFiClient       *mp3client = NULL ;                       // An instance of the
 AsyncWebServer   cmdserver ( 80 ) ;                        // Instance of embedded webserver on port 80
 char             cmd[130] ;                                // Command from MQTT or Serial
 Ticker           tckr ;                                    // For timing 100 msec
-// TinyXML          xml;                                      // For XML parser.
 uint32_t         totalcount = 0 ;                          // Counter mp3 data
 datamode_t       datamode ;                                // State of datastream
 int              metacount ;                               // Number of bytes in metadata
@@ -253,7 +246,6 @@ int              metaint = 0 ;                             // Number of databyte
 int8_t           currentpreset = -1 ;                      // Preset station playing
 String           host ;                                    // The URL to connect to or file to play
 String           playlist ;                                // The URL of the specified playlist
-// bool             xmlreq = false ;                          // Request for XML parse.
 bool             hostreq = false ;                         // Request for new host
 bool             reqtone = false ;                         // New tone setting requested
 bool             muteflag = false ;                        // Mute output
@@ -276,17 +268,6 @@ bool             localfile = false ;                       // Play from local mp
 bool             chunked = false ;                         // Station provides chunked transfer
 int              chunkcount = 0 ;                          // Counter for chunked transfer
 
-// XML parse globals.
-// const char* xmlhost = "playerservices.streamtheworld.com" ;// XML data source
-// const char* xmlget =  "GET /api/livestream"                // XML get parameters
-//                       "?version=1.5"                       // API Version of IHeartRadio
-//                       "&mount=%sAAC"                       // MountPoint with Station Callsign
-//                       "&lang=en" ;                         // Language
-// int         xmlport = 80 ;                                 // XML Port
-// uint8_t     xmlbuffer[150] ;                               // For XML decoding
-// String      xmlOpen ;                                      // Opening XML tag
-// String      xmlTag ;                                       // Current XML tag
-// String      xmlData ;                                      // Data inside tag
 String      stationServer( "" ) ;                          // Radio stream server
 String      stationPort( "" ) ;                            // Radio stream port
 String      stationMount( "" ) ;                           // Radio stream Callsign
@@ -307,11 +288,6 @@ String      stationMount( "" ) ;                           // Radio stream Calls
 
 // The object for the MP3 player
 VS1053 vs1053player (  VS1053_CS, VS1053_DCS, VS1053_DREQ ) ;
-
-//******************************************************************************************
-// End VS1053 stuff.                                                                       *
-//******************************************************************************************
-
 
 //******************************************************************************************
 // Ringbuffer (fifo) routines.                                                             *
@@ -620,7 +596,6 @@ void timer100()
       aoldval = anewval ;                         // Remember value for change detection
       if ( anewval != 0 )                         // Button pushed?
       {
-        //dbgprint ( "Analog button %d pushed, v = %d", anewval, v ) ;
         if ( anewval == 1 )                       // Button 1?
         {
           ini_block.newpreset = 0 ;               // Yes, goto first preset
@@ -1152,9 +1127,6 @@ void setup()
   readinifile() ;                                      // Read .ini file
   getpresets() ;                                       // Get the presets from .ini-file
   setup_wifi();
-  // WiFi.disconnect() ;                                  // The router may keep the old connection
-  // WiFi.mode ( WIFI_STA ) ;                             // This ESP is a station
-  // wifi_station_set_hostname ( (char*)NAME ) ;
   SPI.begin() ;                                        // Init SPI bus
   // Print some memory and sketch info
   dbgprint ( "Starting ESP Version %s...  Free memory %d",
@@ -1163,13 +1135,11 @@ void setup()
   dbgprint ( "Sketch size %d, free size %d",
              ESP.getSketchSize(),
              ESP.getFreeSketchSpace() ) ;
-//  pinMode ( BUTTON2, INPUT_PULLUP ) ;                  // Input for control button 2
   vs1053player.begin() ;                               // Initialize VS1053 player
   delay(10);
   tckr.attach ( 0.100, timer100 ) ;                    // Every 100 msec
   dbgprint ( "Selected network: %-25s", ini_block.ssid.c_str() ) ;
   NetworkFound = connectwifi() ;                       // Connect to WiFi network
-  //NetworkFound = false ;                             // TEST, uncomment for no network test
   dbgprint ( "Start server for commands" ) ;
   cmdserver.on ( "/", handleCmd ) ;                    // Handle startpage
   cmdserver.onNotFound ( handleFS ) ;                  // Handle file from FS
@@ -1188,161 +1158,6 @@ void setup()
   delay ( 1000 ) ;                                     // Show IP for a while
   analogrest = ( analogRead ( A0 ) + asw1 ) / 2  ;     // Assumed inactive analog input
 }
-
-
-//******************************************************************************************
-//                                  X M L  C A L L B A C K                                 *
-//******************************************************************************************
-// Process XML tags into variables.                                                        *
-//******************************************************************************************
-// void XML_callback ( uint8_t statusflags, char* tagName, uint16_t tagNameLen,
-//                     char* data,  uint16_t dataLen )
-// {
-//   if ( statusflags & STATUS_START_TAG )
-//   {
-//     if ( tagNameLen )
-//     {
-//       xmlOpen = String ( tagName ) ;
-//       //dbgprint ( "Start tag %s",tagName ) ;
-//     }
-//   }
-//   else if ( statusflags & STATUS_END_TAG )
-//   {
-//     //dbgprint ( "End tag %s", tagName ) ;
-//   }
-//   else if ( statusflags & STATUS_TAG_TEXT )
-//   {
-//     xmlTag = String( tagName ) ;
-//     xmlData = String( data ) ;
-//     //dbgprint ( Serial.print( "Tag: %s, text: %s", tagName, data ) ;
-//   }
-//   else if ( statusflags & STATUS_ATTR_TEXT )
-//   {
-//     //dbgprint ( "Attribute: %s, text: %s", tagName, data ) ;
-//   }
-//   else if  ( statusflags & STATUS_ERROR )
-//   {
-//     //dbgprint ( "XML Parsing error  Tag: %s, text: %s", tagName, data ) ;
-//   }
-// }
-
-
-//******************************************************************************************
-//                                  X M L  P A R S E                                       *
-//******************************************************************************************
-// Parses streams from XML data.                                                           *
-//******************************************************************************************
-// String xmlparse ( String mount )
-// {
-//   // Example URL for XML Data Stream:
-//   // http://playerservices.streamtheworld.com/api/livestream?version=1.5&mount=IHR_TRANAAC&lang=en
-//   // Clear all variables for use.
-//   char   tmpstr[200] ;                              // Full GET command, later stream URL
-//   char   c ;                                        // Next input character from reply
-//   String urlout ;                                   // Result URL
-//   bool   urlfound = false ;                         // Result found
-
-//   stationServer = "" ;
-//   stationPort = "" ;
-//   stationMount = "" ;
-//   xmlTag = "" ;
-//   xmlData = "" ;
-//   stop_mp3client() ; // Stop any current wificlient connections.
-//   dbgprint ( "Connect to new iHeartRadio host: %s", mount.c_str() ) ;
-//   datamode = INIT ;                                 // Start default in metamode
-//   chunked = false ;                                 // Assume not chunked
-//   // Create a GET commmand for the request.
-//   sprintf ( tmpstr, xmlget, mount.c_str() ) ;
-//   dbgprint ( "%s", tmpstr ) ;
-//   // Connect to XML stream.
-//   mp3client = new WiFiClient() ;
-//   if ( mp3client->connect ( xmlhost, xmlport ) ) {
-//     dbgprint ( "Connected!" ) ;
-//     mp3client->print ( String ( tmpstr ) + " HTTP/1.1\r\n"
-//                        "Host: " + xmlhost + "\r\n"
-//                        "User-Agent: Mozilla/5.0\r\n"
-//                        "Connection: close\r\n\r\n" ) ;
-//     // Check for XML Data.
-//     while ( true )
-//     {
-//       if ( mp3client->available() )
-//       {
-//         char c = mp3client->read() ;
-//         if ( c == '<' )
-//         {
-//           c = mp3client->read() ;
-//           if ( c == '?' )
-//           {
-//             xml.processChar ( '<' ) ;
-//             xml.processChar ( '?' ) ;
-//             break ;
-//           }
-//         }
-//       }
-//       yield() ;
-//     }
-//     dbgprint ( "XML parser processing..." ) ;
-//     // Process XML Data.
-//     while (true)
-//     {
-//       if ( mp3client->available() )
-//       {
-//         c = mp3client->read() ;
-//         xml.processChar ( c ) ;
-//         if ( xmlTag != "" )
-//         {
-//           if ( xmlTag.endsWith ( "/status-code" ) )   // Status code seen?
-//           {
-//             if ( xmlData != "200" )                   // Good result?
-//             {
-//               dbgprint ( "Bad xml status-code %s",    // No, show and stop interpreting
-//                           xmlData.c_str() ) ;
-//               break ;
-//             }
-//           }
-//           if ( xmlTag.endsWith ( "/ip" ) )
-//           {
-//             stationServer = xmlData ;
-//           }
-//           else if ( xmlTag.endsWith ( "/port" ) )
-//           {
-//             stationPort = xmlData ;
-//           }
-//           else if ( xmlTag.endsWith ( "/mount"  ) )
-//           {
-//             stationMount = xmlData ;
-//           }
-//         }
-//       }
-//       // Check if all the station values are stored.
-//       urlfound = ( stationServer != "" && stationPort != "" && stationMount != "" ) ;
-//       if ( urlfound )
-//       {
-//         xml.reset() ;
-//         break ;
-//       }
-//       yield() ;
-//     }
-//     tmpstr[0] = '\0' ;
-//     if ( urlfound )
-//     {
-//       sprintf ( tmpstr, "%s:%s/%s_SC",                   // Build URL for ESP-Radio to stream.
-//                         stationServer.c_str(),
-//                         stationPort.c_str(),
-//                         stationMount.c_str() ) ;
-//       dbgprint ( "Found: %s", tmpstr ) ;
-//     }
-//     dbgprint ( "Closing XML connection." ) ;
-//   }
-//   else
-//   {
-//     dbgprint ( "Can't connect to XML host!" ) ;
-//     tmpstr[0] = '\0' ;
-//   }
-//   stop_mp3client () ;
-//   return String ( tmpstr ) ;                           // Return final streaming URL.
-// }
-
 
 bool is_playing() {
   return datamode & ~(STOPPED|STOPREQD);
@@ -2108,19 +1923,6 @@ char* analyzeCmd ( const char* par, const char* val )
               "New preset station %s accepted",       // Format reply
               host.c_str() ) ;
   }
-  // else if ( argument == "xml" )
-  // {
-  //   if ( datamode & ( HEADER | DATA | METADATA | PLAYLISTINIT |
-  //                     PLAYLISTHEADER | PLAYLISTDATA ) )
-  //   {
-  //     datamode = STOPREQD ;                           // Request STOP
-  //   }
-  //   host = value ;                                    // Save it for storage and selection later
-  //   xmlreq = true ;                                   // Run XML parsing process.
-  //   sprintf ( reply,
-  //             "New xml preset station %s accepted",   // Format reply
-  //             host.c_str() ) ;
-  // }
   else if ( argument == "status" )                    // Status request
   {
     if ( datamode == STOPPED )
@@ -2173,10 +1975,6 @@ char* analyzeCmd ( const char* par, const char* val )
   {
     vs1053player.AdjustRate ( ivalue ) ;              // Yes, adjust
   }
-  // else if ( argument == "debug" )                     // debug on/off request?
-  // {
-  //   DEBUG = ivalue ;                                  // Yes, set flag accordingly
-  // }
   else if ( argument == "analog" )                    // Show analog request?
   {
     sprintf ( reply, "Analog input = %d units",       // Read the analog input for test
@@ -2276,11 +2074,4 @@ void handleCmd ( AsyncWebServerRequest* request )
                          value.c_str() ) ;
   }
   request->send ( 200, "text/plain", reply ) ;          // Send the reply
-  //t = millis() - t ;
-  // If it takes too long to send a reply, we run into the "LmacRxBlk:1"-problem.
-  // Reset the ESP8266.....
-  //if ( t > 8000 )
-  //{
-  //  ESP.restart() ;                                   // Last resource
-  //}
 }
