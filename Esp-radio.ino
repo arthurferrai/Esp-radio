@@ -231,7 +231,7 @@ enum datamode_t {
 ini_struct ini_block;                           // Holds configurable data
 WiFiClient *mp3client = NULL;                   // An instance of the mp3 client
 AsyncWebServer cmdserver(80);                   // Instance of embedded webserver on port 80
-char cmd[130];                                  // Command from MQTT or Serial
+// char cmd[130];                                  // Command from MQTT or Serial
 Ticker tckr;                                    // For timing 100 msec
 uint32_t totalcount = 0;                        // Counter mp3 data
 datamode_t datamode;                            // State of datastream
@@ -259,7 +259,7 @@ bool NetworkFound;                              // True if WiFi network connecte
 String networks;                                // Found networks
 String acceptableNetworks;                               // Aceptable networks (present in .ini file)
 String presetlist;                              // List for webserver
-uint8_t num_an;                                 // Number of acceptable networks in .ini file
+uint8_t acceptableNetworksCount;                                 // Number of acceptable networks in .ini file
 String testfilename = "";                       // File to test (SPIFFS speed)
 int8_t playlist_num = 0;                        // Nonzero for selection from playlist
 File mp3file;                                   // File containing mp3 on SPIFFS
@@ -567,7 +567,7 @@ void showstreamtitle(const char *ml, bool full)
     dbgprint("Streamtitle found, %d bytes", strlen(ml));
     dbgprint(ml);
     p1 = (char *)ml + 12;       // Begin of artist and title
-    if ((p2 = strstr(ml, ";"))) // Search for end of title
+    if ((p2 = (char*)strstr(ml, ";"))) // Search for end of title
     {
       if (*p1 == '\'') // Surrounded by quotes?
       {
@@ -719,25 +719,21 @@ void connectToHost(String &host) {
 //******************************************************************************************
 // Open the local mp3-file.                                                                *
 //******************************************************************************************
-bool connecttofile()
-{
+void connectToFile(String &host) {
   String path; // Full file spec
-  char *p;     // Pointer to filename
 
   displayDebug("**** MP3 Player ****");
   path = host.substring(9);         // Path, skip the "localhost" part
   mp3file = SPIFFS.open(path, "r"); // Open the file
-  if (!mp3file)
-  {
+  if (!mp3file) {
     dbgprint("Error opening file %s", path.c_str()); // No luck
-    return false;
+    return;
   }
-  p = (char *)path.c_str() + 1;            // Point to filename
-  showstreamtitle(p, true);                // Show the filename as title
+  showstreamtitle(path.c_str() + 1, true); // Show the filename as title
   displayDebug("Playing from local file"); // Show Source at position 60
   icyname = "";                            // No icy name yet
   chunked = false;                         // File not chunked
-  return true;
+  datamode = DATA;
 }
 
 //******************************************************************************************
@@ -746,27 +742,22 @@ bool connecttofile()
 // Connect to WiFi using passwords available in the SPIFFS.                                *
 // If connection fails, an AP is created and the function returns false.                   *
 //******************************************************************************************
-bool connectwifi()
-{
-  char *pfs; // Pointer to formatted string
-
+bool connectToWiFi(const char *ssid, const char *password) {
   WiFi.disconnect();           // After restart the router could
   WiFi.softAPdisconnect(true); // still keep the old connection
-  WiFi.begin(ini_block.ssid.c_str(),
-             ini_block.passwd.c_str());                          // Connect to selected SSID
+  WiFi.begin(ssid, password);  // Connect to selected SSID
   displayDebug(dbgprint("Try WiFi %s", ini_block.ssid.c_str())); // Message to show during WiFi connect
 
-  if (WiFi.waitForConnectResult() != WL_CONNECTED) // Try to connect
-  {
-    dbgprint("WiFi Failed!  Trying to setup AP with name %s and password %s.", NAME, NAME);
+  if (WiFi.waitForConnectResult() != WL_CONNECTED) { // Try to connect
+    dbgprint("WiFi Failed!");
     WiFi.softAP(NAME, NAME); // This ESP will be an AP
-    delay(5000);
-    pfs = dbgprint("IP = 192.168.4.1"); // Address if AP
+    delay(2000);
+    displayDebug(dbgprint("AP: %s, pass: %s", NAME, NAME));
+    delay(3000);
+    displayDebug(dbgprint("IP = 192.168.4.1")); // Address if AP
     return false;
   }
-  pfs = dbgprint("IP = %d.%d.%d.%d",
-                 WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3]);
-  displayDebug(pfs);
+  displayDebug(dbgprint("IP = %s", WiFi.localIP().toString().c_str()));
   return true;
 }
 
@@ -775,8 +766,7 @@ bool connectwifi()
 //******************************************************************************************
 // Update via WiFi has been started by Arduino IDE.                                        *
 //******************************************************************************************
-void otastart()
-{
+void otastart() {
   dbgprint("OTA Started");
 }
 
@@ -786,41 +776,29 @@ void otastart()
 // Read the mp3 host from the ini-file specified by the parameter.                         *
 // The host will be returned.                                                              *
 //******************************************************************************************
-String readhostfrominifile(int8_t preset)
-{
-  String path;     // Full file spec as string
+String getPresetFromIniFile(int8_t preset) {
   File inifile;    // File containing URL with mp3
   char tkey[10];   // Key as an array of chars
-  String line;     // Input line from .ini file
-  String linelc;   // Same, but lowercase
-  int inx;         // Position within string
   String res = ""; // Assume not found
 
-  path = String(INIFILENAME);       // Form full path
-  inifile = SPIFFS.open(path, "r"); // Open the file
-  if (inifile)
-  {
+  inifile = SPIFFS.open(INIFILENAME, "r"); // Open the file
+  if (inifile) {
     sprintf(tkey, "preset_%02d", preset); // Form the search key
-    while (inifile.available())
-    {
-      line = inifile.readStringUntil('\n'); // Read next line
-      linelc = line;                        // Copy for lowercase
-      linelc.toLowerCase();                 // Set to lowercase
-      if (linelc.startsWith(tkey))          // Found the key?
-      {
-        inx = line.indexOf("="); // Get position of "="
-        if (inx > 0)             // Equal sign present?
-        {
-          line.remove(0, inx + 1); // Yes, remove key
-          res = chomp(line);       // Remove garbage
+    while (inifile.available()) {
+      String currentLine = inifile.readStringUntil('\n'); // Read next line
+      String lowerCaseLine = currentLine;                        // Copy for lowercase
+      lowerCaseLine.toLowerCase();                 // Set to lowercase
+      if (lowerCaseLine.startsWith(tkey)) {        // Found the key?
+        int inx = currentLine.indexOf("="); // Get position of "="
+        if (inx > 0) {           // Equal sign present?
+          currentLine.remove(0, inx + 1); // Yes, remove key
+          res = chomp(currentLine);       // Remove garbage
           break;                   // End the while loop
         }
       }
     }
     inifile.close(); // Close the file
-  }
-  else
-  {
+  } else {
     dbgprint("File %s not found, please create one!", INIFILENAME);
   }
   return res;
@@ -831,25 +809,16 @@ String readhostfrominifile(int8_t preset)
 //******************************************************************************************
 // Read the .ini file and interpret the commands.                                          *
 //******************************************************************************************
-void readinifile()
-{
-  String path;  // Full file spec as string
+void parseIniFile() {
   File inifile; // File containing URL with mp3
-  String line;  // Input line from .ini file
 
-  path = String(INIFILENAME);       // Form full path
-  inifile = SPIFFS.open(path, "r"); // Open the file
-  if (inifile)
-  {
-    while (inifile.available())
-    {
-      line = inifile.readStringUntil('\n'); // Read next line
-      analyzeCmd(line.c_str());
+  inifile = SPIFFS.open(INIFILENAME, "r"); // Open the file
+  if (inifile) {
+    while (inifile.available()) {
+      analyzeCmd(inifile.readStringUntil('\n').c_str());
     }
     inifile.close(); // Close the file
-  }
-  else
-  {
+  } else {
     dbgprint("File %s not found, use save command to create one!", INIFILENAME);
   }
 }
@@ -859,34 +828,21 @@ void readinifile()
 //******************************************************************************************
 // Listen to commands on the Serial inputline.                                             *
 //******************************************************************************************
-void scanserial()
-{
+void parseSerialCommands() {
   static String serialcmd; // Command from Serial input
-  char c;                  // Input character
-  char *reply;             // Reply string froma analyzeCmd
-  uint16_t len;            // Length of input string
 
-  while (Serial.available()) // Any input seen?
-  {
-    c = (char)Serial.read(); // Yes, read the next input character
-    //Serial.write ( c ) ;                       // Echo
-    len = serialcmd.length(); // Get the length of the current string
-    if ((c == '\n') || (c == '\r'))
-    {
-      if (len)
-      {
-        strncpy(cmd, serialcmd.c_str(), sizeof(cmd));
-        reply = analyzeCmd(cmd); // Analyze command and handle it
-        dbgprint(reply);         // Result for debugging
-        serialcmd = "";          // Prepare for new command
+  while (Serial.available()) { // Any input seen?
+    char c = (char)Serial.read(); // Yes, read the next input character
+    if ((c == '\n') || (c == '\r')) {
+      if (!serialcmd.isEmpty()) {
+        dbgprint(analyzeCmd(serialcmd.c_str()));
+        serialcmd = "";
       }
     }
-    if (c >= ' ') // Only accept useful characters
-    {
+    if (c >= ' ') { // Only accept useful characters
       serialcmd += c; // Add to the command
     }
-    if (len >= (sizeof(cmd) - 2)) // Check for excessive length
-    {
+    if (serialcmd.length() >= 165) { // Check for excessive length
       serialcmd = ""; // Too long, reset
     }
   }
@@ -895,40 +851,33 @@ void scanserial()
 //******************************************************************************************
 //                                   M K _ L S A N                                         *
 //******************************************************************************************
-// Make al list of acceptable networks in .ini file.                                       *
-// The result will be stored in acceptableNetworks like "|SSID1|SSID2|......|SSIDN|".               *
-// The number of acceptable networks will be stored in num_an.                             *
+// Make a list of acceptable networks in .ini file.                                        *
+// The result will be stored in acceptableNetworks like "|SSID1|SSID2|......|SSIDN|".      *
+// The number of acceptable networks will be stored in acceptableNetworksCount.            *
 //******************************************************************************************
-void mk_lsan()
-{
-  String path;  // Full file spec as string
+void populateAcceptableNetworks() {
   File inifile; // File containing URL with mp3
   String line;  // Input line from .ini file
   String ssid;  // SSID in line
   int inx;      // Place of "/"
 
-  num_an = 0;                       // Count acceptable networks
-  acceptableNetworks = "|";                  // Initial value
-  path = String(INIFILENAME);       // Form full path
-  inifile = SPIFFS.open(path, "r"); // Open the file
-  if (inifile)
-  {
-    while (inifile.available())
-    {
+  acceptableNetworksCount = 0;             // Count acceptable networks
+  acceptableNetworks = "|";                // Initial value
+  inifile = SPIFFS.open(INIFILENAME, "r"); // Open the file
+  if (inifile) {
+    while (inifile.available()) {
       line = inifile.readStringUntil('\n'); // Read next line
       ssid = line;                          // Copy holds original upper/lower case
       line.toLowerCase();                   // Case insensitive
-      if (line.startsWith("wifi"))          // Line with WiFi spec?
-      {
+      if (line.startsWith("wifi")) {        // Line with WiFi spec?
         inx = line.indexOf("/"); // Find separator between ssid and password
-        if (inx > 0)             // Separator found?
-        {
+        if (inx > 0) {           // Separator found?
           ssid = ssid.substring(5, inx); // Line holds SSID now
           dbgprint("Added SSID %s to acceptable networks",
                    ssid.c_str());
           acceptableNetworks += ssid; // Add to list
           acceptableNetworks += "|";  // Separator
-          num_an++;          // Count number oif acceptable networks
+          acceptableNetworksCount++;          // Count number oif acceptable networks
         }
       }
     }
@@ -1037,9 +986,9 @@ void setup()
 
   setup_SPIFFS();
 
-  mk_lsan();      // Make a list of acceptable networks in ini file.
+  populateAcceptableNetworks();      // Make a list of acceptable networks in ini file.
   listNetworksAndSelectBest(); // Search for WiFi networks
-  readinifile();  // Read .ini file
+  parseIniFile();  // Read .ini file
   getpresets();   // Get the presets from .ini-file
   setup_wifi();
   SPI.begin(); // Init SPI bus
@@ -1054,7 +1003,7 @@ void setup()
   delay(10);
   tckr.attach(0.100, callback100miliseconds); // Every 100 msec
   dbgprint("Selected network: %-25s", ini_block.ssid.c_str());
-  NetworkFound = connectwifi(); // Connect to WiFi network
+  NetworkFound = connectToWiFi(ini_block.ssid.c_str(), ini_block.passwd.c_str()); // Connect to WiFi network
   dbgprint("Start server for commands");
   cmdserver.on("/", handleCmd);             // Handle startpage
   cmdserver.onNotFound(handleFS);           // Handle file from FS
@@ -1188,7 +1137,7 @@ void loop()
       {
         if (ini_block.newpreset <= 0)
           ini_block.newpreset = 1;
-        host = readhostfrominifile(ini_block.newpreset); // Lookup preset in ini-file
+        host = getPresetFromIniFile(ini_block.newpreset); // Lookup preset in ini-file
       }
       dbgprint("New preset/file requested (%d/%d) from %s",
                currentpreset, playlist_num, host.c_str());
@@ -1203,21 +1152,14 @@ void loop()
       }
     }
   }
-  if (hostreq)
-  { // New preset or station?
+  if (hostreq) { // New preset or station?
     hostreq = false;
     currentpreset = ini_block.newpreset; // Remember current preset
 
     isLocalFile = host.startsWith("localhost/"); // Find out if this URL is on localhost
-    if (isLocalFile)
-    { // Play file from localhost?
-      if (connecttofile())
-      {                  // Yes, open mp3-file
-        datamode = DATA; // Start in DATA mode
-      }
-    }
-    else
-    {
+    if (isLocalFile) { // Play file from localhost?
+      connectToFile(host);
+    } else {
       connectToHost(host); // Switch to new host
       yield();
     }
@@ -1247,7 +1189,7 @@ void loop()
     testSPIFFSPerformance(testfilename); // Yes, do the test
     testfilename = "";      // Clear test request
   }
-  scanserial();        // Handle serial input
+  parseSerialCommands();        // Handle serial input
   ArduinoOTA.handle(); // Check for OTA
 }
 
@@ -1758,7 +1700,7 @@ char *analyzeCmd(const char *str)
 {
   char *value; // Points to value after equalsign in command
 
-  value = strstr(str, "="); // See if command contains a "="
+  value = (char*)strstr(str, "="); // See if command contains a "="
   if (value)
   {
     *value = '\0'; // Separate command from value
@@ -2014,7 +1956,7 @@ char *analyzeCmd(const char *par, const char *val)
   {
     inx = value.indexOf("/"); // Find separator between ssid and password
     // Was this the strongest SSID or the only acceptable?
-    if (num_an == 1)
+    if (acceptableNetworksCount == 1)
     {
       ini_block.ssid = value.substring(0, inx); // Only one.  Set as the strongest
     }
