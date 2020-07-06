@@ -196,7 +196,7 @@ void handleFileUpload(AsyncWebServerRequest *request, String filename,
 char *analyzeCmd(const char *str);
 char *analyzeCmd(const char *par, const char *val);
 String chomp(String str);
-bool connecttohost();
+void connectToHost(String &host);
 
 //
 //******************************************************************************************
@@ -332,8 +332,7 @@ uint8_t getring() {
 //******************************************************************************************
 //                               E M P T Y R I N G                                         *
 //******************************************************************************************
-void emptyring()
-{
+void emptyring() {
   ringBufferWorkingindex = 0; // Reset ringbuffer administration
   ringBufferEmptyindex = RINGBFSIZ - 1;
   rcount = 0;
@@ -344,10 +343,8 @@ void emptyring()
 //******************************************************************************************
 // Read the encryption type of the network and return as a 4 byte name                     *
 //*********************4********************************************************************
-const char *getEncryptionType(int thisType)
-{
-  switch (thisType)
-  {
+const char *getEncryptionType(int thisType) {
+  switch (thisType) {
   case ENC_TYPE_WEP:
     return "WEP ";
   case ENC_TYPE_TKIP:
@@ -369,56 +366,42 @@ const char *getEncryptionType(int thisType)
 // Acceptable networks are those who have a "SSID.pw" file in the SPIFFS.                  *
 // SSIDs of available networks will be saved for use in webinterface.                      *
 //******************************************************************************************
-void listNetworks()
-{
-  int maxsig = -1000; // Used for searching strongest WiFi signal
-  int newstrength;
-  byte encryption;        // TKIP(WPA)=2, WEP=5, CCMP(WPA)=4, NONE=7, AUTO=8
-  const char *acceptable; // Netwerk is acceptable for connection
-  int i;                  // Loop control
-  String sassid;          // Search string in acceptableNetworks
+void listNetworksAndSelectBest() {
+  int strongestSignal = -1000; // Used for searching strongest WiFi signal
 
-  ini_block.ssid = String("none"); // No selceted network yet
+  ini_block.ssid = "none"; // No selceted network yet
   // scan for nearby networks:
   dbgprint("* Scan Networks *");
   int numSsid = WiFi.scanNetworks();
-  if (numSsid == -1)
-  {
+  if (numSsid == -1) {
     dbgprint("Couldn't get a wifi connection");
     return;
   }
   // print the list of networks seen:
-  dbgprint("Number of available networks: %d",
-           numSsid);
+  dbgprint("Number of available networks: %d", numSsid);
   // Print the network number and name for each network found and
   // find the strongest acceptable network
-  for (i = 0; i < numSsid; i++)
-  {
-    acceptable = "";                     // Assume not acceptable
-    newstrength = WiFi.RSSI(i);          // Get the signal strenght
-    sassid = WiFi.SSID(i) + String("|"); // For search string
-    if (acceptableNetworks.indexOf(sassid) >= 0)  // Is this SSID acceptable?
-    {
+  for (int i = 0; i < numSsid; i++) {
+    const char *acceptable = "";                     // Assume not acceptable
+    int currentStrength = WiFi.RSSI(i);          // Get the signal strenght
+    if (acceptableNetworks.indexOf(WiFi.SSID(i) + "|") >= 0) { // Is this SSID acceptable?
       acceptable = "Acceptable";
-      if (newstrength > maxsig) // This is a better Wifi
-      {
-        maxsig = newstrength;
+      if (currentStrength > strongestSignal) {// This is a better Wifi
+        strongestSignal = currentStrength;
         ini_block.ssid = WiFi.SSID(i); // Remember SSID name
       }
     }
-    encryption = WiFi.encryptionType(i);
     dbgprint("%2d - %-25s Signal: %3d dBm Encryption %4s  %s",
              i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
-             getEncryptionType(encryption),
+             getEncryptionType(WiFi.encryptionType(i)),
              acceptable);
     // Remember this network for later use
-    networks += WiFi.SSID(i) + String("|");
+    networks += WiFi.SSID(i) + "|";
   }
   dbgprint("--------------------------------------");
 }
 
-bool in_playlist_mode()
-{
+bool inPlaylistMode() {
   return datamode & (PLAYLISTDATA | PLAYLISTINIT | PLAYLISTHEADER);
 }
 //******************************************************************************************
@@ -428,40 +411,29 @@ bool in_playlist_mode()
 // If totalcount has not been changed, there is a problem and playing will stop.           *
 // Note that a "yield()" within this routine or in called functions will cause a crash!    *
 //******************************************************************************************
-void timer10sec()
-{
+void callback10seconds() {
   static uint32_t oldtotalcount = 7321; // Needed foor change detection
-  static uint8_t morethanonce = 0;      // Counter for succesive fails
+  static uint8_t failCounter = 0;      // Counter for succesive fails
 
-  if (is_playing())
-  {
-    if (totalcount == oldtotalcount) // Still playing?
-    {
+  if (is_playing()) { // Still playing?
+    if (totalcount == oldtotalcount) {
       dbgprint("No data input"); // No data detected!
-      if (morethanonce > 10)     // Happened too many times?
-      {
-        dbgprint("Going to restart...");
+      if (failCounter > 10) {   // Happened too many times?
         ESP.restart(); // Reset the CPU, probably no return
       }
-      if (in_playlist_mode())
-      {
+      if (inPlaylistMode()) {
         playlist_num = 0; // Yes, end of playlist
       }
-      if ((morethanonce > 0) || // Happened more than once?
-          (playlist_num > 0))   // Or playlist active?
-      {
+      if ((failCounter > 0) || (playlist_num > 0)) { // Happened more than once or playlist active?
         datamode = STOPREQD;   // Stop player
         ini_block.newpreset++; // Yes, try next channel
         dbgprint("Trying other station/file...");
       }
-      morethanonce++; // Count the fails
-    }
-    else
-    {
-      if (morethanonce) // Recovered from data loss?
-      {
+      failCounter++; // Count the fails
+    } else {
+      if (failCounter) { // Recovered from data loss?
         dbgprint("Recovered from dataloss");
-        morethanonce = 0; // Data see, reset failcounter
+        failCounter = 0; // Data see, reset failcounter
       }
       oldtotalcount = totalcount; // Save for comparison in next cycle
     }
@@ -474,22 +446,15 @@ void timer10sec()
 // Translate analog input to switch number.  0 is inactive.                                *
 // Note that it is adviced to avoid expressions as the argument for the abs function.      *
 //******************************************************************************************
-uint8_t anagetsw(uint16_t v)
-{
-  int i;                 // Loop control
-  int oldmindist = 1000; // Detection least difference
-  int newdist;           // New found difference
+uint8_t getAnalogSwitch(uint16_t currentValue) {
+  int smallestAnalogValue = 1000; // Detection least difference
   uint8_t sw = 0;        // Number of switch detected (0 or 1..3)
 
-  if (v > analogrest) // Inactive level?
-  {
-    for (i = 0; i < NUMANA; i++)
-    {
-      newdist = analogSwitch[i] - v; // Compute difference
-      newdist = abs(newdist);    // Make it absolute
-      if (newdist < oldmindist)  // New least difference?
-      {
-        oldmindist = newdist; // Yes, remember
+  if (currentValue > analogrest) { // Inactive level?
+    for (int i = 0; i < NUMANA; i++) {
+      int newValue = abs(analogSwitch[i] - currentValue); // Compute difference
+      if (newValue < smallestAnalogValue) { // New least difference?
+        smallestAnalogValue = newValue; // Yes, remember
         sw = i + 1;           // Remember switch
       }
     }
@@ -502,100 +467,78 @@ uint8_t anagetsw(uint16_t v)
 //******************************************************************************************
 // Test the performance of SPIFFS read.                                                    *
 //******************************************************************************************
-void testfile(String fspec)
-{
-  String path;           // Full file spec
-  File tfile;            // File containing mp3
+void testSPIFFSPerformance(String fileToTest) {
+  File testFile;            // File containing mp3
   uint32_t len, savlen;  // File length
-  uint32_t t0, t1, told; // For time test
-  uint32_t t_error = 0;  // Number of slow reads
+  uint32_t testStartTime, fileReadStartTime, lastTimeStamp; // For time test
+  uint32_t slowReadsCount = 0;  // Number of slow reads
 
-  dbgprint("Start test of file %s", fspec.c_str());
-  t0 = millis();                  // Timestamp at start
-  t1 = t0;                        // Prevent uninitialized value
-  told = t0;                      // For report
-  path = String("/") + fspec;     // Form full path
-  tfile = SPIFFS.open(path, "r"); // Open the file
-  if (tfile)
-  {
-    len = tfile.available(); // Get file length
+  dbgprint("Start test of file %s", fileToTest.c_str());
+  testStartTime = millis();                  // Timestamp at start
+  lastTimeStamp = testStartTime;                      // For report
+  testFile = SPIFFS.open("/" + fileToTest, "r"); // Open the file
+  if (testFile) {
+    len = testFile.available(); // Get file length
     savlen = len;            // Save for result print
-    while (len--)            // Any data left?
-    {
-      t1 = millis();           // To meassure read time
-      tfile.read();            // Read one byte
-      if ((millis() - t1) > 5) // Read took more than 5 msec?
-      {
-        t_error++; // Yes, count slow reads
+    while (len--) {          // Any data left?
+      fileReadStartTime = millis();           // To meassure read time
+      testFile.read();            // Read one byte
+      if ((millis() - fileReadStartTime) > 5) { // Read took more than 5 msec?
+        slowReadsCount++; // Yes, count slow reads
       }
-      if ((len % 100) == 0) // Yield reguarly
-      {
+      if ((len % 100) == 0) { // Yield reguarly
         yield();
       }
-      if (((t1 - told) / 1000) > 0 || len == 0)
-      {
+      if (((fileReadStartTime - lastTimeStamp) / 1000) > 0 || len == 0) {
         // Show results for debug
         dbgprint("Read %s, length %d/%d took %d seconds, %d slow reads",
-                 fspec.c_str(), savlen - len, savlen, (t1 - t0) / 1000, t_error);
-        told = t1;
+                 fileToTest.c_str(), savlen - len, savlen, (fileReadStartTime - testStartTime) / 1000, slowReadsCount);
+        lastTimeStamp = fileReadStartTime;
       }
-      if ((t1 - t0) > 100000) // Give up after 100 seconds
-      {
+      if ((fileReadStartTime - testStartTime) > 100000) { // Give up after 100 seconds
         dbgprint("Give up...");
         break;
       }
     }
-    tfile.close();
+    testFile.close();
     dbgprint("EOF"); // End of file
   }
 }
 
+void handleAnalogInput() {
+  static uint8_t lastActiveAnalogSwitch = 0;
+
+  uint8_t currentAnalogSwitch = getAnalogSwitch(analogRead(A0));  // Check analog value for program switches
+    if (currentAnalogSwitch != lastActiveAnalogSwitch) { // Change?
+      lastActiveAnalogSwitch = currentAnalogSwitch; // Remember value for change detection
+      switch (currentAnalogSwitch) {
+      case 1:
+        ini_block.newpreset = 0; // Yes, goto first preset
+        break;
+      case 2:
+        ini_block.newpreset = currentpreset + 1; // Yes, goto next preset
+        break;
+      case 3:
+        ini_block.newpreset = currentpreset - 1; // Yes, goto previous preset
+        break;
+      default:
+        break;
+      }
+    }
+}
 //******************************************************************************************
 //                                  T I M E R 1 0 0                                        *
 //******************************************************************************************
 // Examine button every 100 msec.                                                          *
 //******************************************************************************************
-void timer100()
-{
-  static int count10sec = 0; // Counter for activatie 10 seconds process
-  static int oldval2 = HIGH; // Previous value of digital input button 2
-#if (not(defined(USETFT)))
-  static int oldval1 = HIGH; // Previous value of digital input button 1
-  static int oldval3 = HIGH; // Previous value of digital input button 3
-#endif
-  int newval;                 // New value of digital input switch
-  uint16_t v;                 // Analog input value 0..1023
-  static uint8_t aoldval = 0; // Previous value of analog input switch
-  uint8_t anewval;            // New value of analog input switch (0..3)
+void callback100miliseconds() {
+  static int iterationCounter = 0; // Counter for activatie 10 seconds process
 
-  if (++count10sec == 100) // 10 seconds passed?
-  {
-    timer10sec();   // Yes, do 10 second procedure
-    count10sec = 0; // Reset count
-  }
-  else
-  {
-    v = analogRead(A0);     // Read analog value
-    anewval = anagetsw(v);  // Check analog value for program switches
-    if (anewval != aoldval) // Change?
-    {
-      aoldval = anewval; // Remember value for change detection
-      if (anewval != 0)  // Button pushed?
-      {
-        if (anewval == 1) // Button 1?
-        {
-          ini_block.newpreset = 0; // Yes, goto first preset
-        }
-        else if (anewval == 2) // Button 2?
-        {
-          ini_block.newpreset = currentpreset + 1; // Yes, goto next preset
-        }
-        else if (anewval == 3) // Button 3?
-        {
-          ini_block.newpreset = currentpreset - 1; // Yes, goto previous preset
-        }
-      }
-    }
+  if (++iterationCounter == 100) { // 10 seconds passed?
+    callback10seconds();   // Yes, do 10 second procedure
+    iterationCounter = 0; // Reset count
+  } else {
+    handleAnalogInput();
   }
 }
 
@@ -604,19 +547,8 @@ void timer100()
 //******************************************************************************************
 // Show the current volume as an indicator on the screen.                                  *
 //******************************************************************************************
-void displayvolume()
-{
-#if defined(USETFT)
-  static uint8_t oldvol = 0; // Previous volume
-  uint8_t pos;               // Positon of volume indicator
+void displayvolume() {
 
-  if (vs1053player.getVolume() != oldvol)
-  {
-    pos = map(vs1053player.getVolume(), 0, 100, 0, 160);
-    tft.fillRect(0, 126, pos, 2, RED);           // Paint red part
-    tft.fillRect(pos, 126, 160 - pos, 2, GREEN); // Paint green part
-  }
-#endif
 }
 
 //******************************************************************************************
@@ -631,8 +563,7 @@ void showstreamtitle(const char *ml, bool full)
   char *p2;
   char streamtitle[150]; // Streamtitle from metadata
 
-  if (strstr(ml, "StreamTitle="))
-  {
+  if (strstr(ml, "StreamTitle=")) {
     dbgprint("Streamtitle found, %d bytes", strlen(ml));
     dbgprint(ml);
     p1 = (char *)ml + 12;       // Begin of artist and title
@@ -649,14 +580,11 @@ void showstreamtitle(const char *ml, bool full)
     strncpy(streamtitle, p1, sizeof(streamtitle));
     streamtitle[sizeof(streamtitle) - 1] = '\0';
   }
-  else if (full)
-  {
+  else if (full) {
     // Info probably from playlist
     strncpy(streamtitle, ml, sizeof(streamtitle));
     streamtitle[sizeof(streamtitle) - 1] = '\0';
-  }
-  else
-  {
+  } else {
     icystreamtitle = ""; // Unknown type
     return;              // Do not show
   }
@@ -680,7 +608,7 @@ void showstreamtitle(const char *ml, bool full)
 //******************************************************************************************
 // Disconnect from the server.                                                             *
 //******************************************************************************************
-void stop_mp3client()
+void stopMp3Client()
 {
   if (mp3client)
   {
@@ -696,86 +624,94 @@ void stop_mp3client()
   }
 }
 
+void removeProtocolFromHost(String &host) {
+  if (host.startsWith("http://"))
+    host = host.substring(7);
+  else if (host.startsWith("https://"))
+    host = host.substring(8);
+}
+
+int removePortFromHost(String &host) {
+  int port = 80;
+  int inx = host.indexOf(":");
+  if (inx >= 0) {
+    int slash = host.indexOf('/');
+    if (slash == -1) {
+      port = host.substring(inx + 1).toInt(); // Get portnumber as integer
+      host = host.substring(0, inx);
+    } else {
+      port = host.substring(inx + 1, slash).toInt();
+      host = host.substring(0, inx) + host.substring(slash);
+    }
+  }
+  return port;
+}
+
+String removeExtensionFromHost(String &host) {
+  String extension = "/";
+  int inx = host.indexOf("/"); // Search for begin of extension
+  if (inx > 0) {           // Is there an extension?
+    extension = host.substring(inx);    // Yes, change the default
+    host = host.substring(0, inx); // Host without extension
+  }
+  return extension;
+}
+
+bool startMp3Client(String &host, int port, String &extension) {
+  mp3client = new WiFiClient();
+  if (mp3client->connect(host.c_str(), port)) {
+    // This will send the request to the server. Request metadata.
+    mp3client->print(String("GET ") +
+                     extension +
+                     String(" HTTP/1.1\r\n") +
+                     String("Host: ") +
+                     host +
+                     String("\r\n") +
+                     String("Icy-MetaData:1\r\n") +
+                     String("Connection: close\r\n\r\n"));
+    return true;
+  }
+  return false;
+}
+
 //******************************************************************************************
 //                            C O N N E C T T O H O S T                                    *
 
 //******************************************************************************************
 // Connect to the Internet radio server specified by newpreset.                            *
 //******************************************************************************************
-bool connecttohost()
-{
+void connectToHost(String &host) {
   int inx;                // Position of ":" in hostname
-  char *pfs;              // Pointer to formatted string
   int port = 80;          // Port number for host
   String extension = "/"; // May be like "/mp3" in "skonto.ls.lv:8002/mp3"
-  String hostwoext;       // Host without extension and portnumber
 
-  stop_mp3client(); // Disconnect if still connected
+  stopMp3Client(); // Disconnect if still connected
   dbgprint("Connect to new host %s", host.c_str());
   displayDebug("** Internet radio **");
+
   datamode = INIT;           // Start default in metamode
   chunked = false;           // Assume not chunked
-  if (host.endsWith(".m3u")) // Is it an m3u playlist?
-  {
+
+  if (host.endsWith(".m3u")) { // Is it an m3u playlist?
     playlist = host;         // Save copy of playlist URL
     datamode = PLAYLISTINIT; // Yes, start in PLAYLIST mode
-    if (playlist_num == 0)   // First entry to play?
-    {
+    if (playlist_num == 0) { // First entry to play?
       playlist_num = 1; // Yes, set index
     }
     dbgprint("Playlist request, entry %d", playlist_num);
   }
-  // remove protocol from host
-  if (host.startsWith("http://"))
-  {
-    host = host.substring(7);
-  }
-  else if (host.startsWith("https://"))
-  {
-    host = host.substring(8);
-  }
-  // In the URL there may be an extension
-  inx = host.indexOf("/"); // Search for begin of extension
-  if (inx > 0)             // Is there an extension?
-  {
-    extension = host.substring(inx);    // Yes, change the default
-    hostwoext = host.substring(0, inx); // Host without extension
-  }
-  // In the URL there may be a portnumber
-  inx = host.indexOf(":"); // Search for separator
-  if (inx >= 0)            // Portnumber available?
-  {
-    int slash = host.indexOf('/');
-    if (slash == -1)
-    {
-      port = host.substring(inx + 1).toInt(); // Get portnumber as integer
-    }
-    else
-    {
-      port = host.substring(inx + 1, slash).toInt();
-    }
-    hostwoext = host.substring(0, inx); // Host without portnumber
-  }
-  pfs = dbgprint("Connect to %s on port %d, extension %s",
-                 hostwoext.c_str(), port, extension.c_str());
-  displayDebug(pfs);
-  mp3client = new WiFiClient();
-  if (mp3client->connect(hostwoext.c_str(), port))
-  {
+
+  removeProtocolFromHost(host);
+  extension = removeExtensionFromHost(host);
+  port = removePortFromHost(host);
+
+  displayDebug(dbgprint("Connect to %s on port %d, extension %s",
+               host.c_str(), port, extension.c_str()));
+  if (startMp3Client(host, port, extension)) {
     dbgprint("Connected to server");
-    // This will send the request to the server. Request metadata.
-    mp3client->print(String("GET ") +
-                     extension +
-                     String(" HTTP/1.1\r\n") +
-                     String("Host: ") +
-                     hostwoext +
-                     String("\r\n") +
-                     String("Icy-MetaData:1\r\n") +
-                     String("Connection: close\r\n\r\n"));
-    return true;
+  } else {
+    dbgprint("Request failed!");
   }
-  dbgprint("Request %s failed!", host.c_str());
-  return false;
 }
 
 //******************************************************************************************
@@ -1102,7 +1038,7 @@ void setup()
   setup_SPIFFS();
 
   mk_lsan();      // Make a list of acceptable networks in ini file.
-  listNetworks(); // Search for WiFi networks
+  listNetworksAndSelectBest(); // Search for WiFi networks
   readinifile();  // Read .ini file
   getpresets();   // Get the presets from .ini-file
   setup_wifi();
@@ -1116,7 +1052,7 @@ void setup()
            ESP.getFreeSketchSpace());
   vs1053player.begin(); // Initialize VS1053 player
   delay(10);
-  tckr.attach(0.100, timer100); // Every 100 msec
+  tckr.attach(0.100, callback100miliseconds); // Every 100 msec
   dbgprint("Selected network: %-25s", ini_block.ssid.c_str());
   NetworkFound = connectwifi(); // Connect to WiFi network
   dbgprint("Start server for commands");
@@ -1152,7 +1088,7 @@ void stop_playback()
   }
   else
   {
-    stop_mp3client(); // Disconnect if still connected
+    stopMp3Client(); // Disconnect if still connected
   }
   handlebyte_ch(0, true);    // Force flush of buffer
   vs1053player.setVolume(0); // Mute
@@ -1282,7 +1218,7 @@ void loop()
     }
     else
     {
-      connecttohost(); // Switch to new host
+      connectToHost(host); // Switch to new host
       yield();
     }
   }
@@ -1308,7 +1244,7 @@ void loop()
   displayvolume(); // Show volume on display
   if (testfilename.length())
   {                         // File to test?
-    testfile(testfilename); // Yes, do the test
+    testSPIFFSPerformance(testfilename); // Yes, do the test
     testfilename = "";      // Clear test request
   }
   scanserial();        // Handle serial input
@@ -1659,7 +1595,7 @@ void handlebyte(uint8_t b, bool force)
       if (playlist_num == playlistcnt)
       {
         host = metaline; // Yes, set new host
-        connecttohost(); // Connect to it
+        connectToHost(host); // Connect to it
       }
       metaline = "";
       host = playlist; // Back to the .m3u host
